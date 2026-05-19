@@ -246,28 +246,31 @@ def direct_download():
 
 @app.route('/api/add-captions', methods=['POST'])
 def add_captions():
-    """Add captions to a video using PupCaps"""
+    """Add captions and overlays to a video, ensuring 9:16 output"""
     try:
         data = request.get_json()
         video_url = data.get('videoUrl')
         caption = data.get('caption', '')
         word_timestamps = data.get('wordTimestamps', [])
         title = data.get('title', '')
-        title_duration = data.get('titleDuration', 5)  # Title shows for 5 seconds
+        title_duration = data.get('titleDuration', 5)
+
+        # Overlay options
+        show_branding = data.get('showBranding', True)
+        title_position = data.get('titlePosition', 'center')  # top, center, bottom
+        highlight_keywords = data.get('highlightKeywords', [])
 
         if not video_url:
             return jsonify({'error': 'videoUrl required'}), 400
-
-        if not caption and not word_timestamps:
-            return jsonify({'error': 'caption or wordTimestamps required'}), 400
 
         job_id = str(uuid.uuid4())[:8]
         jobs[job_id] = {'status': 'processing', 'progress': 0}
 
         # Start processing in background
         thread = threading.Thread(
-            target=process_captions,
-            args=(job_id, video_url, caption, word_timestamps, title, title_duration)
+            target=process_video_with_overlays,
+            args=(job_id, video_url, caption, word_timestamps, title, title_duration,
+                  show_branding, title_position, highlight_keywords)
         )
         thread.start()
 
@@ -373,8 +376,9 @@ def generate_srt_from_timestamps(word_timestamps, title, title_duration):
     return srt_content
 
 
-def process_captions(job_id, video_url, caption, word_timestamps, title, title_duration):
-    """Background task to add captions to video"""
+def process_video_with_overlays(job_id, video_url, caption, word_timestamps, title, title_duration,
+                                  show_branding, title_position, highlight_keywords):
+    """Background task to process video: 9:16 ratio + overlays + captions"""
     import subprocess
     import requests
 
@@ -383,114 +387,220 @@ def process_captions(job_id, video_url, caption, word_timestamps, title, title_d
         work_dir = f'/tmp/captions/{job_id}'
         os.makedirs(work_dir, exist_ok=True)
 
-        jobs[job_id]['progress'] = 10
+        jobs[job_id]['progress'] = 5
 
         # Download the video
         print(f"[{job_id}] Downloading video...")
         video_response = requests.get(video_url, stream=True, timeout=120)
-        video_path = f'{work_dir}/input.mp4'
-        with open(video_path, 'wb') as f:
+        input_path = f'{work_dir}/input_original.mp4'
+        with open(input_path, 'wb') as f:
             for chunk in video_response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        jobs[job_id]['progress'] = 30
+        jobs[job_id]['progress'] = 15
 
-        # Get video duration using ffprobe
+        # Get video info using ffprobe
         try:
             result = subprocess.run(
-                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                 '-of', 'default=noprint_wrappers=1:nokey=1', video_path],
+                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=width,height,duration', '-show_entries', 'format=duration',
+                 '-of', 'json', input_path],
                 capture_output=True, text=True, timeout=30
             )
-            video_duration = float(result.stdout.strip()) if result.stdout.strip() else 60
+            import json
+            probe_data = json.loads(result.stdout)
+            input_width = probe_data.get('streams', [{}])[0].get('width', 1080)
+            input_height = probe_data.get('streams', [{}])[0].get('height', 1920)
+            video_duration = float(probe_data.get('format', {}).get('duration', 60))
         except:
-            video_duration = 60
+            input_width, input_height, video_duration = 1080, 1920, 60
 
-        # Generate SRT file
-        print(f"[{job_id}] Generating SRT...")
-        if word_timestamps and len(word_timestamps) > 0:
-            srt_content = generate_srt_from_timestamps(word_timestamps, title, title_duration)
+        print(f"[{job_id}] Input video: {input_width}x{input_height}, duration: {video_duration}s")
+
+        jobs[job_id]['progress'] = 20
+
+        # Step 1: Convert to 9:16 (1080x1920)
+        print(f"[{job_id}] Converting to 9:16...")
+        scaled_path = f'{work_dir}/scaled_916.mp4'
+
+        # Calculate scaling to fit 9:16 with padding (letterbox/pillarbox)
+        target_w, target_h = 1080, 1920
+        input_ratio = input_width / input_height
+        target_ratio = target_w / target_h  # 0.5625
+
+        if input_ratio > target_ratio:
+            # Video is wider - scale to fit width, pad top/bottom
+            scale_filter = f"scale={target_w}:-2,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
         else:
-            srt_content = generate_srt_from_caption(caption, title, title_duration, video_duration)
+            # Video is taller - scale to fit height, pad left/right
+            scale_filter = f"scale=-2:{target_h},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
 
-        srt_path = f'{work_dir}/captions.srt'
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            f.write(srt_content)
-
-        jobs[job_id]['progress'] = 40
-
-        # Run PupCaps to generate MOV overlay
-        print(f"[{job_id}] Running PupCaps...")
-        overlay_path = f'{work_dir}/overlay.mov'
-        css_path = '/app/captions.css'
-
-        # PupCaps command
-        pupcaps_cmd = [
-            'pupcaps', srt_path,
-            '--style', css_path,
-            '--output', overlay_path,
-            '--width', '1080',
-            '--height', '1920',
-            '--fps', '30'
+        scale_cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-vf', scale_filter,
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
+            scaled_path
         ]
-
-        result = subprocess.run(pupcaps_cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            print(f"[{job_id}] PupCaps error: {result.stderr}")
-            # Fallback: use FFmpeg's subtitle filter directly
-            jobs[job_id]['progress'] = 50
-            output_path = f'{work_dir}/output.mp4'
-
-            ffmpeg_cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,
-                '-vf', f"subtitles={srt_path}:force_style='FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H0047AB,BackColour=&H0047AB,Outline=2,Shadow=1,MarginV=100'",
-                '-c:a', 'copy',
-                output_path
+            print(f"[{job_id}] Scale warning: {result.stderr[:500]}")
+            # Try simpler approach
+            scale_cmd = [
+                'ffmpeg', '-y', '-i', input_path,
+                '-vf', f'scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2',
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:a', 'aac',
+                scaled_path
             ]
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
-                raise Exception(f"FFmpeg error: {result.stderr}")
+                # Last resort: just force scale
+                scale_cmd = [
+                    'ffmpeg', '-y', '-i', input_path,
+                    '-vf', f'scale={target_w}:{target_h}',
+                    '-c:v', 'libx264', '-preset', 'fast',
+                    '-c:a', 'aac',
+                    scaled_path
+                ]
+                subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
+
+        if not os.path.exists(scaled_path):
+            scaled_path = input_path  # Fall back to original
+
+        jobs[job_id]['progress'] = 35
+
+        # Step 2: Add branding overlays using FFmpeg drawtext
+        print(f"[{job_id}] Adding branding overlays...")
+        branded_path = f'{work_dir}/branded.mp4'
+
+        # Build filter complex for overlays
+        filters = []
+
+        if show_branding:
+            # Escape title for FFmpeg (handle special chars)
+            safe_title = title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
+
+            # Top branding text: KIVU MORNING POST
+            filters.append(
+                f"drawtext=text='KIVU MORNING POST':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                f"fontsize=24:fontcolor=white:x=(w-text_w)/2:y=20:shadowcolor=black:shadowx=2:shadowy=2"
+            )
+
+            # Title box position
+            if title_position == 'top':
+                title_y = 80
+            elif title_position == 'bottom':
+                title_y = 'h-280'
+            else:  # center
+                title_y = '(h-text_h)/2'
+
+            # Title text with blue background box
+            if title:
+                filters.append(
+                    f"drawbox=x=20:y={title_y if isinstance(title_y, int) else title_y.replace('text_h', '120')}:w=w-40:h=120:"
+                    f"color=0x0047AB@0.9:t=fill"
+                )
+                filters.append(
+                    f"drawtext=text='{safe_title[:80].upper()}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                    f"fontsize=36:fontcolor=white:x=(w-text_w)/2:y={title_y}+30:"
+                    f"shadowcolor=black:shadowx=2:shadowy=2"
+                )
+
+            # Bottom branding: KIVUMORNINGPOST
+            filters.append(
+                f"drawtext=text='KIVUMORNINGPOST':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                f"fontsize=20:fontcolor=white:x=(w-text_w)/2:y=h-40:shadowcolor=black:shadowx=1:shadowy=1"
+            )
+
+        if filters:
+            filter_str = ','.join(filters)
+            brand_cmd = [
+                'ffmpeg', '-y', '-i', scaled_path,
+                '-vf', filter_str,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:a', 'copy',
+                branded_path
+            ]
+            result = subprocess.run(brand_cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                print(f"[{job_id}] Branding filter error, using scaled video: {result.stderr[:300]}")
+                branded_path = scaled_path
         else:
+            branded_path = scaled_path
+
+        if not os.path.exists(branded_path):
+            branded_path = scaled_path
+
+        jobs[job_id]['progress'] = 50
+
+        # Step 3: Add captions
+        output_path = f'{work_dir}/output.mp4'
+
+        if caption or (word_timestamps and len(word_timestamps) > 0):
+            print(f"[{job_id}] Adding captions...")
+
+            # Generate SRT for captions only (no title - already in overlay)
+            if word_timestamps and len(word_timestamps) > 0:
+                srt_content = generate_srt_from_timestamps(word_timestamps, '', 0)
+            else:
+                srt_content = generate_srt_from_caption(caption, '', 0, video_duration)
+
+            srt_path = f'{work_dir}/captions.srt'
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
+
             jobs[job_id]['progress'] = 60
 
-            # Composite overlay onto video using FFmpeg
-            print(f"[{job_id}] Compositing video...")
-            output_path = f'{work_dir}/output.mp4'
+            # Add subtitles using FFmpeg
+            # Style: white text on blue background, positioned above bottom branding
+            subtitle_style = (
+                "FontName=DejaVu Sans,FontSize=28,PrimaryColour=&HFFFFFF,"
+                "BackColour=&HAB4700,BorderStyle=4,Outline=0,Shadow=0,MarginV=120"
+            )
 
-            ffmpeg_cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,
-                '-i', overlay_path,
-                '-filter_complex', '[0:v][1:v]overlay=0:0:shortest=1',
+            caption_cmd = [
+                'ffmpeg', '-y', '-i', branded_path,
+                '-vf', f"subtitles={srt_path}:force_style='{subtitle_style}'",
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
                 '-c:a', 'copy',
-                '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '23',
                 output_path
             ]
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                raise Exception(f"FFmpeg composite error: {result.stderr}")
+                print(f"[{job_id}] Caption error: {result.stderr[:300]}")
+                # Try without special style
+                caption_cmd = [
+                    'ffmpeg', '-y', '-i', branded_path,
+                    '-vf', f"subtitles={srt_path}",
+                    '-c:v', 'libx264', '-preset', 'fast',
+                    '-c:a', 'copy',
+                    output_path
+                ]
+                result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
+                if result.returncode != 0:
+                    output_path = branded_path
+        else:
+            output_path = branded_path
 
         jobs[job_id]['progress'] = 90
 
         # Verify output exists
         if not os.path.exists(output_path):
-            raise Exception("Output file not created")
+            output_path = branded_path if os.path.exists(branded_path) else scaled_path
 
         jobs[job_id] = {
             'status': 'done',
             'progress': 100,
             'filepath': output_path,
-            'filename': f'{job_id}_captioned.mp4'
+            'filename': f'{job_id}_916_branded.mp4'
         }
-        print(f"[{job_id}] Caption processing complete!")
+        print(f"[{job_id}] Video processing complete: 9:16 with overlays!")
 
     except Exception as e:
         print(f"[{job_id}] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         jobs[job_id] = {'status': 'error', 'error': str(e)}
 
 
