@@ -1,0 +1,12 @@
+# Render.com deployment configuration
+# Deploy: Connect GitHub repo → Auto-deploy
+
+services:
+  - type: web
+    name: yt-dlp-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
