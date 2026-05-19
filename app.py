@@ -244,5 +244,255 @@ def direct_download():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/add-captions', methods=['POST'])
+def add_captions():
+    """Add captions to a video using PupCaps"""
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl')
+        caption = data.get('caption', '')
+        word_timestamps = data.get('wordTimestamps', [])
+        title = data.get('title', '')
+        title_duration = data.get('titleDuration', 5)  # Title shows for 5 seconds
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        if not caption and not word_timestamps:
+            return jsonify({'error': 'caption or wordTimestamps required'}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'processing', 'progress': 0}
+
+        # Start processing in background
+        thread = threading.Thread(
+            target=process_captions,
+            args=(job_id, video_url, caption, word_timestamps, title, title_duration)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def generate_srt_from_caption(caption, title, title_duration, video_duration=60):
+    """Generate SRT content from plain caption text"""
+    srt_content = ""
+    cue_number = 1
+
+    # Add title as first subtitle (first N seconds)
+    if title:
+        srt_content += f"{cue_number}\n"
+        srt_content += f"00:00:00,000 --> 00:00:{title_duration:02d},000\n"
+        srt_content += f"{title.upper()}\n\n"
+        cue_number += 1
+
+    # Split caption into 4-word chunks
+    words = caption.strip().split()
+    if not words:
+        return srt_content
+
+    chunk_size = 4
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunks.append(' '.join(words[i:i + chunk_size]))
+
+    if not chunks:
+        return srt_content
+
+    # Calculate timing for each chunk (after title)
+    start_time = title_duration if title else 0
+    available_duration = video_duration - start_time
+    chunk_duration = max(2, available_duration / len(chunks))  # At least 2s per chunk
+
+    for i, chunk in enumerate(chunks):
+        start = start_time + (i * chunk_duration)
+        end = start + chunk_duration
+
+        # Format timestamps as HH:MM:SS,mmm
+        start_h, start_m = divmod(int(start), 3600)
+        start_m, start_s = divmod(start_m, 60)
+        start_ms = int((start - int(start)) * 1000)
+
+        end_h, end_m = divmod(int(end), 3600)
+        end_m, end_s = divmod(end_m, 60)
+        end_ms = int((end - int(end)) * 1000)
+
+        srt_content += f"{cue_number}\n"
+        srt_content += f"{start_h:02d}:{start_m:02d}:{start_s:02d},{start_ms:03d} --> {end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}\n"
+        srt_content += f"{chunk.upper()}\n\n"
+        cue_number += 1
+
+    return srt_content
+
+
+def generate_srt_from_timestamps(word_timestamps, title, title_duration):
+    """Generate SRT content from word timestamps (synced subtitles)"""
+    srt_content = ""
+    cue_number = 1
+
+    # Add title as first subtitle
+    if title:
+        srt_content += f"{cue_number}\n"
+        srt_content += f"00:00:00,000 --> 00:00:{title_duration:02d},000\n"
+        srt_content += f"{title.upper()}\n\n"
+        cue_number += 1
+
+    if not word_timestamps:
+        return srt_content
+
+    # Group words into 2-word chunks for display
+    for i in range(0, len(word_timestamps), 2):
+        word1 = word_timestamps[i]
+        word2 = word_timestamps[i + 1] if i + 1 < len(word_timestamps) else None
+
+        text = word1['word']
+        start = word1['start']
+        end = word1['end']
+
+        if word2:
+            text += ' ' + word2['word']
+            end = word2['end']
+
+        # Format timestamps
+        start_h, start_m = divmod(int(start), 3600)
+        start_m, start_s = divmod(start_m, 60)
+        start_ms = int((start - int(start)) * 1000)
+
+        end_h, end_m = divmod(int(end), 3600)
+        end_m, end_s = divmod(end_m, 60)
+        end_ms = int((end - int(end)) * 1000)
+
+        srt_content += f"{cue_number}\n"
+        srt_content += f"{start_h:02d}:{start_m:02d}:{start_s:02d},{start_ms:03d} --> {end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms:03d}\n"
+        srt_content += f"{text.upper()}\n\n"
+        cue_number += 1
+
+    return srt_content
+
+
+def process_captions(job_id, video_url, caption, word_timestamps, title, title_duration):
+    """Background task to add captions to video"""
+    import subprocess
+    import requests
+
+    try:
+        os.makedirs('/tmp/captions', exist_ok=True)
+        work_dir = f'/tmp/captions/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+
+        jobs[job_id]['progress'] = 10
+
+        # Download the video
+        print(f"[{job_id}] Downloading video...")
+        video_response = requests.get(video_url, stream=True, timeout=120)
+        video_path = f'{work_dir}/input.mp4'
+        with open(video_path, 'wb') as f:
+            for chunk in video_response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        jobs[job_id]['progress'] = 30
+
+        # Get video duration using ffprobe
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', video_path],
+                capture_output=True, text=True, timeout=30
+            )
+            video_duration = float(result.stdout.strip()) if result.stdout.strip() else 60
+        except:
+            video_duration = 60
+
+        # Generate SRT file
+        print(f"[{job_id}] Generating SRT...")
+        if word_timestamps and len(word_timestamps) > 0:
+            srt_content = generate_srt_from_timestamps(word_timestamps, title, title_duration)
+        else:
+            srt_content = generate_srt_from_caption(caption, title, title_duration, video_duration)
+
+        srt_path = f'{work_dir}/captions.srt'
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            f.write(srt_content)
+
+        jobs[job_id]['progress'] = 40
+
+        # Run PupCaps to generate MOV overlay
+        print(f"[{job_id}] Running PupCaps...")
+        overlay_path = f'{work_dir}/overlay.mov'
+        css_path = '/app/captions.css'
+
+        # PupCaps command
+        pupcaps_cmd = [
+            'pupcaps', srt_path,
+            '--style', css_path,
+            '--output', overlay_path,
+            '--width', '1080',
+            '--height', '1920',
+            '--fps', '30'
+        ]
+
+        result = subprocess.run(pupcaps_cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            print(f"[{job_id}] PupCaps error: {result.stderr}")
+            # Fallback: use FFmpeg's subtitle filter directly
+            jobs[job_id]['progress'] = 50
+            output_path = f'{work_dir}/output.mp4'
+
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-vf', f"subtitles={srt_path}:force_style='FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF,OutlineColour=&H0047AB,BackColour=&H0047AB,Outline=2,Shadow=1,MarginV=100'",
+                '-c:a', 'copy',
+                output_path
+            ]
+
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                raise Exception(f"FFmpeg error: {result.stderr}")
+        else:
+            jobs[job_id]['progress'] = 60
+
+            # Composite overlay onto video using FFmpeg
+            print(f"[{job_id}] Compositing video...")
+            output_path = f'{work_dir}/output.mp4'
+
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,
+                '-i', overlay_path,
+                '-filter_complex', '[0:v][1:v]overlay=0:0:shortest=1',
+                '-c:a', 'copy',
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                output_path
+            ]
+
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                raise Exception(f"FFmpeg composite error: {result.stderr}")
+
+        jobs[job_id]['progress'] = 90
+
+        # Verify output exists
+        if not os.path.exists(output_path):
+            raise Exception("Output file not created")
+
+        jobs[job_id] = {
+            'status': 'done',
+            'progress': 100,
+            'filepath': output_path,
+            'filename': f'{job_id}_captioned.mp4'
+        }
+        print(f"[{job_id}] Caption processing complete!")
+
+    except Exception as e:
+        print(f"[{job_id}] Error: {str(e)}")
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
