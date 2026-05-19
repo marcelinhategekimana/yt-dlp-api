@@ -419,128 +419,85 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         jobs[job_id]['progress'] = 20
 
-        # Step 1: Convert to 9:16 (1080x1920)
+        # Step 1: Convert to 9:16 (1080x1920) - optimized for low memory
         print(f"[{job_id}] Converting to 9:16...")
         scaled_path = f'{work_dir}/scaled_916.mp4'
 
-        # Calculate scaling to fit 9:16 with padding (letterbox/pillarbox)
-        target_w, target_h = 1080, 1920
-        input_ratio = input_width / input_height
-        target_ratio = target_w / target_h  # 0.5625
+        # Use 720x1280 for smaller memory footprint on free tier
+        target_w, target_h = 720, 1280
 
-        if input_ratio > target_ratio:
-            # Video is wider - scale to fit width, pad top/bottom
-            scale_filter = f"scale={target_w}:-2,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
-        else:
-            # Video is taller - scale to fit height, pad left/right
-            scale_filter = f"scale=-2:{target_h},pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black"
-
+        # Simple scale with pad - memory efficient
         scale_cmd = [
-            'ffmpeg', '-y', '-i', input_path,
-            '-vf', scale_filter,
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
+            'ffmpeg', '-y',
+            '-i', input_path,
+            '-vf', f'scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',  # Faster, less memory
+            '-c:a', 'aac', '-b:a', '96k',
+            '-movflags', '+faststart',
+            '-max_muxing_queue_size', '1024',
             scaled_path
         ]
-        result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
-            print(f"[{job_id}] Scale warning: {result.stderr[:500]}")
-            # Try simpler approach
+            print(f"[{job_id}] Scale error: {result.stderr[:300]}")
+            # Fallback: just copy with re-encode
             scale_cmd = [
                 'ffmpeg', '-y', '-i', input_path,
-                '-vf', f'scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2',
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
                 '-c:a', 'aac',
                 scaled_path
             ]
-            result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                # Last resort: just force scale
-                scale_cmd = [
-                    'ffmpeg', '-y', '-i', input_path,
-                    '-vf', f'scale={target_w}:{target_h}',
-                    '-c:v', 'libx264', '-preset', 'fast',
-                    '-c:a', 'aac',
-                    scaled_path
-                ]
-                subprocess.run(scale_cmd, capture_output=True, text=True, timeout=300)
+            subprocess.run(scale_cmd, capture_output=True, text=True, timeout=600)
 
         if not os.path.exists(scaled_path):
-            scaled_path = input_path  # Fall back to original
+            scaled_path = input_path
 
         jobs[job_id]['progress'] = 35
 
-        # Step 2: Add branding overlays using FFmpeg drawtext
-        print(f"[{job_id}] Adding branding overlays...")
-        branded_path = f'{work_dir}/branded.mp4'
+        # Step 2+3 Combined: Add branding overlays AND captions in single pass (memory efficient)
+        print(f"[{job_id}] Adding branding and captions...")
+        output_path = f'{work_dir}/output.mp4'
 
-        # Build filter complex for overlays
+        # Build combined filter
         filters = []
 
         if show_branding:
-            # Escape title for FFmpeg (handle special chars)
-            safe_title = title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
+            # Escape title for FFmpeg
+            safe_title = title.replace("'", "").replace(":", " ").replace("\\", "")[:60]
 
-            # Top branding text: KIVU MORNING POST
+            # Top: KIVU MORNING POST
             filters.append(
-                f"drawtext=text='KIVU MORNING POST':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-                f"fontsize=24:fontcolor=white:x=(w-text_w)/2:y=20:shadowcolor=black:shadowx=2:shadowy=2"
+                "drawtext=text='KIVU MORNING POST':fontsize=18:fontcolor=white:"
+                "x=(w-text_w)/2:y=15:shadowcolor=black:shadowx=1:shadowy=1"
             )
 
             # Title box position
             if title_position == 'top':
-                title_y = 80
+                box_y, text_y = 60, 75
             elif title_position == 'bottom':
-                title_y = 'h-280'
+                box_y, text_y = 'h-200', 'h-185'
             else:  # center
-                title_y = '(h-text_h)/2'
+                box_y, text_y = '(h-80)/2', '(h-60)/2'
 
-            # Title text with blue background box
+            # Blue title box
             if title:
+                filters.append(f"drawbox=x=15:y={box_y}:w=w-30:h=80:color=0x0047AB@0.9:t=fill")
                 filters.append(
-                    f"drawbox=x=20:y={title_y if isinstance(title_y, int) else title_y.replace('text_h', '120')}:w=w-40:h=120:"
-                    f"color=0x0047AB@0.9:t=fill"
-                )
-                filters.append(
-                    f"drawtext=text='{safe_title[:80].upper()}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-                    f"fontsize=36:fontcolor=white:x=(w-text_w)/2:y={title_y}+30:"
-                    f"shadowcolor=black:shadowx=2:shadowy=2"
+                    f"drawtext=text='{safe_title.upper()}':"
+                    f"fontsize=24:fontcolor=white:x=(w-text_w)/2:y={text_y}:shadowcolor=black:shadowx=1:shadowy=1"
                 )
 
-            # Bottom branding: KIVUMORNINGPOST
+            # Bottom: KIVUMORNINGPOST
             filters.append(
-                f"drawtext=text='KIVUMORNINGPOST':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-                f"fontsize=20:fontcolor=white:x=(w-text_w)/2:y=h-40:shadowcolor=black:shadowx=1:shadowy=1"
+                "drawtext=text='KIVUMORNINGPOST':fontsize=14:fontcolor=white:"
+                "x=(w-text_w)/2:y=h-30:shadowcolor=black:shadowx=1:shadowy=1"
             )
 
-        if filters:
-            filter_str = ','.join(filters)
-            brand_cmd = [
-                'ffmpeg', '-y', '-i', scaled_path,
-                '-vf', filter_str,
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                '-c:a', 'copy',
-                branded_path
-            ]
-            result = subprocess.run(brand_cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                print(f"[{job_id}] Branding filter error, using scaled video: {result.stderr[:300]}")
-                branded_path = scaled_path
-        else:
-            branded_path = scaled_path
+        jobs[job_id]['progress'] = 45
 
-        if not os.path.exists(branded_path):
-            branded_path = scaled_path
-
-        jobs[job_id]['progress'] = 50
-
-        # Step 3: Add captions using FFmpeg subtitles filter
-        output_path = f'{work_dir}/output.mp4'
-
+        # Generate SRT if we have captions
+        srt_path = None
         if caption or (word_timestamps and len(word_timestamps) > 0):
-            print(f"[{job_id}] Adding captions...")
-
-            # Generate SRT for captions only (no title - already in overlay)
             if word_timestamps and len(word_timestamps) > 0:
                 srt_content = generate_srt_from_timestamps(word_timestamps, '', 0)
             else:
@@ -550,46 +507,48 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write(srt_content)
 
-            jobs[job_id]['progress'] = 60
+        jobs[job_id]['progress'] = 55
 
-            # Use ASS style for better control - white text on blue background
-            # MarginV=150 to position above bottom branding
-            ass_style = (
-                "FontName=DejaVu Sans,"
-                "FontSize=28,"
-                "PrimaryColour=&H00FFFFFF,"
-                "BackColour=&H80AB4700,"
-                "BorderStyle=4,"
-                "Outline=0,"
-                "Shadow=0,"
-                "MarginV=150,"
-                "Bold=1"
-            )
+        # Build final filter string
+        filter_parts = []
+        if filters:
+            filter_parts.append(','.join(filters))
+        if srt_path:
+            # Simple subtitle style
+            filter_parts.append(f"subtitles={srt_path}:force_style='FontSize=20,MarginV=100'")
 
-            caption_cmd = [
-                'ffmpeg', '-y', '-i', branded_path,
-                '-vf', f"subtitles={srt_path}:force_style='{ass_style}'",
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        if filter_parts:
+            final_filter = ','.join(filter_parts)
+            print(f"[{job_id}] Filter: {final_filter[:200]}...")
+
+            final_cmd = [
+                'ffmpeg', '-y', '-i', scaled_path,
+                '-vf', final_filter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
                 '-c:a', 'copy',
+                '-max_muxing_queue_size', '1024',
                 output_path
             ]
-            result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(final_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                print(f"[{job_id}] Caption with style error: {result.stderr[:500]}")
-                # Try simpler approach
-                caption_cmd = [
-                    'ffmpeg', '-y', '-i', branded_path,
-                    '-vf', f"subtitles={srt_path}",
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                    '-c:a', 'copy',
-                    output_path
-                ]
-                result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
-                if result.returncode != 0:
-                    print(f"[{job_id}] Simple caption error: {result.stderr[:300]}")
-                    output_path = branded_path
+                print(f"[{job_id}] Combined filter error: {result.stderr[:400]}")
+                # Fallback: just branding, no captions
+                if filters:
+                    simple_cmd = [
+                        'ffmpeg', '-y', '-i', scaled_path,
+                        '-vf', ','.join(filters),
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
+                        '-c:a', 'copy',
+                        output_path
+                    ]
+                    result = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=600)
+                    if result.returncode != 0:
+                        print(f"[{job_id}] Branding only error: {result.stderr[:200]}")
+                        output_path = scaled_path
+                else:
+                    output_path = scaled_path
         else:
-            output_path = branded_path
+            output_path = scaled_path
 
         jobs[job_id]['progress'] = 90
 
