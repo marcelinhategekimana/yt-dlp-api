@@ -534,7 +534,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         jobs[job_id]['progress'] = 50
 
-        # Step 3: Add captions
+        # Step 3: Add captions using FFmpeg subtitles filter
         output_path = f'{work_dir}/output.mp4'
 
         if caption or (word_timestamps and len(word_timestamps) > 0):
@@ -552,33 +552,41 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 60
 
-            # Add subtitles using FFmpeg
-            # Style: white text on blue background, positioned above bottom branding
-            subtitle_style = (
-                "FontName=DejaVu Sans,FontSize=28,PrimaryColour=&HFFFFFF,"
-                "BackColour=&HAB4700,BorderStyle=4,Outline=0,Shadow=0,MarginV=120"
+            # Use ASS style for better control - white text on blue background
+            # MarginV=150 to position above bottom branding
+            ass_style = (
+                "FontName=DejaVu Sans,"
+                "FontSize=28,"
+                "PrimaryColour=&H00FFFFFF,"
+                "BackColour=&H80AB4700,"
+                "BorderStyle=4,"
+                "Outline=0,"
+                "Shadow=0,"
+                "MarginV=150,"
+                "Bold=1"
             )
 
             caption_cmd = [
                 'ffmpeg', '-y', '-i', branded_path,
-                '-vf', f"subtitles={srt_path}:force_style='{subtitle_style}'",
+                '-vf', f"subtitles={srt_path}:force_style='{ass_style}'",
                 '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
                 '-c:a', 'copy',
                 output_path
             ]
             result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                print(f"[{job_id}] Caption error: {result.stderr[:300]}")
-                # Try without special style
+                print(f"[{job_id}] Caption with style error: {result.stderr[:500]}")
+                # Try simpler approach
                 caption_cmd = [
                     'ffmpeg', '-y', '-i', branded_path,
                     '-vf', f"subtitles={srt_path}",
-                    '-c:v', 'libx264', '-preset', 'fast',
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
                     '-c:a', 'copy',
                     output_path
                 ]
                 result = subprocess.run(caption_cmd, capture_output=True, text=True, timeout=600)
                 if result.returncode != 0:
+                    print(f"[{job_id}] Simple caption error: {result.stderr[:300]}")
                     output_path = branded_path
         else:
             output_path = branded_path
