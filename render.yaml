@@ -1,17 +1,17 @@
-# Render.com deployment configuration with GPU for Whisper
+# Render.com deployment configuration (CPU - free tier compatible)
 # Deploy: Connect GitHub repo → Auto-deploy
 
 services:
   - type: web
     name: reclip-api
     runtime: docker
-    plan: gpu  # GPU plan for fast Whisper transcription
+    plan: free  # Free tier with CPU-only Whisper
     region: oregon
     healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8080
       - key: GPU_ENABLED
-        value: "true"
+        value: "false"
       - key: WHISPER_MODEL
-        value: "base"  # Options: tiny, base, small, medium, large
+        value: "tiny"  # Tiny model for free tier memory limits

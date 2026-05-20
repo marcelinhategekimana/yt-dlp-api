@@ -55,11 +55,19 @@ cleanup_thread.start()
 
 @app.route('/health', methods=['GET'])
 def health():
-    whisper_available = get_whisper_model() is not None
+    # Don't load model on health check to avoid OOM on free tier
+    whisper_installed = False
+    try:
+        import whisper
+        whisper_installed = True
+    except ImportError:
+        pass
+
     return jsonify({
         'status': 'ok',
         'service': 'reclip-api',
-        'whisper': whisper_available,
+        'whisper': whisper_installed,
+        'model': os.getenv('WHISPER_MODEL', 'tiny'),
         'gpu': os.getenv('GPU_ENABLED', 'false')
     })
 
