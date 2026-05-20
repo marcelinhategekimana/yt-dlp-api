@@ -1,12 +1,17 @@
-# Render.com deployment configuration
+# Render.com deployment configuration with GPU for Whisper
 # Deploy: Connect GitHub repo → Auto-deploy
 
 services:
   - type: web
-    name: yt-dlp-api
+    name: reclip-api
     runtime: docker
-    plan: free
+    plan: gpu  # GPU plan for fast Whisper transcription
+    region: oregon
     healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8080
+      - key: GPU_ENABLED
+        value: "true"
+      - key: WHISPER_MODEL
+        value: "base"  # Options: tiny, base, small, medium, large

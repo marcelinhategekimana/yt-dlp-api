@@ -1,6 +1,6 @@
 """
-Simple yt-dlp video download API
-Deploy to Render.com for free
+yt-dlp video download API with Whisper transcription
+Deploy to Render.com with GPU for fast transcription
 """
 from flask import Flask, request, jsonify, send_file
 import yt_dlp
@@ -10,6 +10,24 @@ import threading
 import time
 
 app = Flask(__name__)
+
+# Lazy load Whisper model (only when needed)
+_whisper_model = None
+
+def get_whisper_model():
+    """Load Whisper model (cached)"""
+    global _whisper_model
+    if _whisper_model is None:
+        try:
+            import whisper
+            model_size = os.getenv("WHISPER_MODEL", "base")
+            print(f"Loading Whisper model: {model_size}")
+            _whisper_model = whisper.load_model(model_size)
+            print("Whisper model loaded!")
+        except ImportError:
+            print("Whisper not installed - transcription disabled")
+            return None
+    return _whisper_model
 
 # Store job statuses
 jobs = {}
@@ -37,7 +55,210 @@ cleanup_thread.start()
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'service': 'yt-dlp-api'})
+    whisper_available = get_whisper_model() is not None
+    return jsonify({
+        'status': 'ok',
+        'service': 'reclip-api',
+        'whisper': whisper_available,
+        'gpu': os.getenv('GPU_ENABLED', 'false')
+    })
+
+
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe_video():
+    """Transcribe a video using Whisper"""
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl') or data.get('url')
+        language = data.get('language', 'auto')
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        model = get_whisper_model()
+        if model is None:
+            return jsonify({'error': 'Whisper not available'}), 503
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'transcribing', 'progress': 0}
+
+        # Start transcription in background
+        thread = threading.Thread(
+            target=transcribe_video_task,
+            args=(job_id, video_url, language)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/transcribe/sync', methods=['POST'])
+def transcribe_video_sync():
+    """Synchronous transcription for short videos"""
+    import subprocess
+    import requests
+
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl') or data.get('url')
+        language = data.get('language', 'auto')
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        model = get_whisper_model()
+        if model is None:
+            return jsonify({'error': 'Whisper not available'}), 503
+
+        # Download video to temp file
+        work_dir = f'/tmp/transcribe/{uuid.uuid4().hex[:8]}'
+        os.makedirs(work_dir, exist_ok=True)
+
+        video_path = f'{work_dir}/video.mp4'
+        audio_path = f'{work_dir}/audio.wav'
+
+        # Download
+        response = requests.get(video_url, stream=True, timeout=120)
+        with open(video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        # Extract audio
+        subprocess.run([
+            'ffmpeg', '-y', '-i', video_path,
+            '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+            audio_path
+        ], capture_output=True, check=True)
+
+        # Transcribe
+        options = {"word_timestamps": True, "verbose": False}
+        if language != 'auto':
+            options["language"] = language
+
+        result = model.transcribe(audio_path, **options)
+
+        # Format response
+        segments = [
+            {
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"].strip()
+            }
+            for seg in result.get("segments", [])
+        ]
+
+        # Cleanup
+        try:
+            import shutil
+            shutil.rmtree(work_dir)
+        except:
+            pass
+
+        return jsonify({
+            'success': True,
+            'text': result.get("text", "").strip(),
+            'language': result.get("language", "unknown"),
+            'segments': segments,
+            'duration': segments[-1]["end"] if segments else 0
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def transcribe_video_task(job_id, video_url, language):
+    """Background transcription task"""
+    import subprocess
+    import requests
+
+    try:
+        model = get_whisper_model()
+        if model is None:
+            jobs[job_id] = {'status': 'error', 'error': 'Whisper not available'}
+            return
+
+        jobs[job_id]['progress'] = 10
+        jobs[job_id]['status'] = 'downloading'
+
+        work_dir = f'/tmp/transcribe/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+
+        video_path = f'{work_dir}/video.mp4'
+        audio_path = f'{work_dir}/audio.wav'
+
+        # Download video
+        response = requests.get(video_url, stream=True, timeout=300)
+        with open(video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        jobs[job_id]['progress'] = 30
+        jobs[job_id]['status'] = 'extracting_audio'
+
+        # Extract audio
+        subprocess.run([
+            'ffmpeg', '-y', '-i', video_path,
+            '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+            audio_path
+        ], capture_output=True, check=True)
+
+        jobs[job_id]['progress'] = 50
+        jobs[job_id]['status'] = 'transcribing'
+
+        # Transcribe with Whisper
+        options = {"word_timestamps": True, "verbose": False}
+        if language != 'auto':
+            options["language"] = language
+
+        result = model.transcribe(audio_path, **options)
+
+        jobs[job_id]['progress'] = 90
+
+        # Format segments
+        segments = [
+            {
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"].strip()
+            }
+            for seg in result.get("segments", [])
+        ]
+
+        # Word-level timestamps
+        word_timestamps = []
+        for seg in result.get("segments", []):
+            for word in seg.get("words", []):
+                word_timestamps.append({
+                    "word": word.get("word", "").strip(),
+                    "start": word.get("start", 0),
+                    "end": word.get("end", 0)
+                })
+
+        jobs[job_id] = {
+            'status': 'done',
+            'progress': 100,
+            'text': result.get("text", "").strip(),
+            'language': result.get("language", "unknown"),
+            'segments': segments,
+            'word_timestamps': word_timestamps,
+            'duration': segments[-1]["end"] if segments else 0
+        }
+
+        # Cleanup
+        try:
+            import shutil
+            shutil.rmtree(work_dir)
+        except:
+            pass
+
+        print(f"[{job_id}] Transcription complete: {len(segments)} segments")
+
+    except Exception as e:
+        print(f"[{job_id}] Transcription error: {e}")
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
 
 @app.route('/api/info', methods=['POST'])
 def get_info():
