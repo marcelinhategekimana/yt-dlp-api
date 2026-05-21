@@ -824,5 +824,190 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         jobs[job_id] = {'status': 'error', 'error': str(e)}
 
 
+@app.route('/api/crop', methods=['POST'])
+def crop_video():
+    """Crop video to vertical format (9:16)"""
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl') or data.get('url') or data.get('inputUrl')
+        ratio = data.get('ratio', '9:16')
+        mode = data.get('mode', 'center')  # 'center' or 'ai'
+        quality = data.get('quality', 'balanced')
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'queued', 'progress': 0}
+
+        # Start cropping in background
+        thread = threading.Thread(
+            target=crop_video_task,
+            args=(job_id, video_url, ratio, mode, quality)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'jobId': job_id, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/probe', methods=['POST'])
+def probe_video():
+    """Get video dimensions"""
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl') or data.get('url')
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        # Download to temp file for probing
+        import requests as req
+        work_dir = f'/tmp/downloads/{uuid.uuid4().hex[:8]}'
+        os.makedirs(work_dir, exist_ok=True)
+        input_path = f'{work_dir}/probe_input.mp4'
+
+        response = req.get(video_url, stream=True, timeout=30)
+        with open(input_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        # Get dimensions with ffprobe
+        import subprocess
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height', '-of', 'json', input_path],
+            capture_output=True, text=True
+        )
+
+        # Cleanup
+        os.remove(input_path)
+        os.rmdir(work_dir)
+
+        if result.returncode == 0:
+            import json
+            info = json.loads(result.stdout)
+            stream = info.get('streams', [{}])[0]
+            return jsonify({
+                'success': True,
+                'width': stream.get('width', 1920),
+                'height': stream.get('height', 1080)
+            })
+
+        return jsonify({'success': False, 'error': 'Could not probe video'}), 400
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def crop_video_task(job_id, video_url, ratio, mode, quality):
+    """Background task to crop video to vertical"""
+    import subprocess
+    import requests as req
+
+    try:
+        jobs[job_id]['status'] = 'downloading'
+        jobs[job_id]['progress'] = 10
+
+        work_dir = f'/tmp/downloads/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+
+        input_path = f'{work_dir}/input.mp4'
+        output_path = f'{work_dir}/vertical.mp4'
+
+        # Download video
+        print(f"[{job_id}] Downloading video...")
+        response = req.get(video_url, stream=True, timeout=120)
+        response.raise_for_status()
+
+        with open(input_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        jobs[job_id]['status'] = 'analyzing'
+        jobs[job_id]['progress'] = 30
+
+        # Get video dimensions
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height', '-of', 'json', input_path],
+            capture_output=True, text=True
+        )
+
+        width, height = 1920, 1080
+        if result.returncode == 0:
+            import json
+            info = json.loads(result.stdout)
+            stream = info.get('streams', [{}])[0]
+            width = stream.get('width', 1920)
+            height = stream.get('height', 1080)
+
+        print(f"[{job_id}] Input dimensions: {width}x{height}")
+
+        # Parse target ratio
+        ratio_parts = ratio.split(':')
+        target_ratio = int(ratio_parts[0]) / int(ratio_parts[1])
+
+        # Calculate crop
+        if width / height > target_ratio:
+            # Wider than target - crop sides (center crop)
+            new_width = int(height * target_ratio)
+            x = (width - new_width) // 2
+            crop_filter = f"crop={new_width}:{height}:{x}:0"
+        else:
+            # Taller than target - crop top/bottom
+            new_height = int(width / target_ratio)
+            y = (height - new_height) // 2
+            crop_filter = f"crop={width}:{new_height}:0:{y}"
+
+        jobs[job_id]['status'] = 'processing'
+        jobs[job_id]['progress'] = 50
+
+        # Quality presets
+        presets = {
+            'fast': {'crf': '28', 'preset': 'veryfast'},
+            'balanced': {'crf': '23', 'preset': 'fast'},
+            'high': {'crf': '18', 'preset': 'slow'}
+        }
+        preset = presets.get(quality, presets['balanced'])
+
+        # FFmpeg command with crop and scale to 1080x1920
+        print(f"[{job_id}] Cropping with filter: {crop_filter}")
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-vf', f"{crop_filter},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+            '-c:v', 'libx264', '-crf', preset['crf'], '-preset', preset['preset'],
+            '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart',
+            output_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if result.returncode == 0 and os.path.exists(output_path):
+            jobs[job_id] = {
+                'status': 'done',
+                'progress': 100,
+                'filepath': output_path,
+                'filename': f'vertical_{job_id}.mp4',
+                'outputWidth': 1080,
+                'outputHeight': 1920
+            }
+            print(f"[{job_id}] Crop complete!")
+        else:
+            print(f"[{job_id}] FFmpeg error: {result.stderr[:500]}")
+            jobs[job_id] = {'status': 'error', 'error': 'FFmpeg processing failed'}
+
+        # Cleanup input
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    except Exception as e:
+        print(f"[{job_id}] Crop error: {str(e)}")
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
