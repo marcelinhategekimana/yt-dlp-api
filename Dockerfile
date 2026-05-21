@@ -60,8 +60,7 @@ COPY captions.css .
 
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Remove healthcheck - Railway handles this
+# The Whisper model loading can take 2-3 minutes on first request
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "600", "--workers", "1", "--threads", "2", "app:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 600 --workers 1 --threads 2 app:app"]
