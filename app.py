@@ -627,6 +627,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         social_yt = os.path.join(assets_dir, 'social-youtube.png')
 
         jobs[job_id]['progress'] = 5
+        jobs[job_id]['status'] = 'downloading'
 
         # Download the video
         print(f"[{job_id}] Downloading video...")
@@ -635,6 +636,46 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         with open(input_path, 'wb') as f:
             for chunk in video_response.iter_content(chunk_size=8192):
                 f.write(chunk)
+
+        # Auto-transcribe if no word timestamps provided
+        if not word_timestamps or len(word_timestamps) == 0:
+            print(f"[{job_id}] No timestamps provided, auto-transcribing with Whisper...")
+            jobs[job_id]['status'] = 'transcribing'
+            jobs[job_id]['progress'] = 10
+
+            try:
+                model = get_whisper_model()
+                if model:
+                    # Extract audio
+                    audio_path = f'{work_dir}/audio.wav'
+                    subprocess.run([
+                        'ffmpeg', '-y', '-i', input_path,
+                        '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                        audio_path
+                    ], capture_output=True, check=True, timeout=120)
+
+                    jobs[job_id]['progress'] = 15
+
+                    # Transcribe
+                    result = model.transcribe(audio_path, word_timestamps=True, verbose=False)
+
+                    # Extract word-level timestamps
+                    word_timestamps = []
+                    for seg in result.get("segments", []):
+                        for word in seg.get("words", []):
+                            word_timestamps.append({
+                                "word": word.get("word", "").strip(),
+                                "start": word.get("start", 0),
+                                "end": word.get("end", 0)
+                            })
+
+                    print(f"[{job_id}] Transcribed {len(word_timestamps)} words")
+                    jobs[job_id]['progress'] = 20
+                else:
+                    print(f"[{job_id}] Whisper not available, skipping transcription")
+            except Exception as trans_err:
+                print(f"[{job_id}] Transcription failed: {trans_err}")
+                # Continue without subtitles
 
         jobs[job_id]['progress'] = 15
 
