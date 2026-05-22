@@ -57,6 +57,7 @@ WORKDIR /app
 # Copy application files
 COPY app.py .
 COPY captions.css .
+COPY assets/ ./assets/
 
 EXPOSE 8080
 
