@@ -925,11 +925,13 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 f.write(srt_content)
             print(f"[{job_id}] SRT created: {len(srt_content)} chars")
 
-            # Add subtitles to output
+            # Add subtitles to output - smaller text, positioned above social bar
             final_output = f'{work_dir}/final_with_subs.mp4'
+            # Escape path for FFmpeg (replace : with \:)
+            srt_escaped = srt_path.replace(':', '\\:')
             sub_cmd = [
                 'ffmpeg', '-y', '-i', output_path,
-                '-vf', f"subtitles={srt_path}:force_style='FontSize=22,MarginV=100,PrimaryColour=&HFFFFFF,BackColour=&H80000000,BorderStyle=4'",
+                '-vf', f"subtitles={srt_escaped}:force_style='FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
                 '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                 '-c:a', 'copy',
                 final_output
