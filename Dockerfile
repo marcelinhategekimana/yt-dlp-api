@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     gnupg \
+    # Font support for FFmpeg text overlays
+    fontconfig \
+    fonts-dejavu-core \
     # Puppeteer dependencies for headless Chrome
     chromium \
     fonts-liberation \
@@ -30,7 +33,8 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxrandr2 \
     xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f -v
 
 # Install Node.js 20.x
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
