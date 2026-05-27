@@ -609,11 +609,14 @@ def add_captions():
         # Caption style options: 'bottom' (default), 'top', 'center'
         caption_style = data.get('captionStyle', 'bottom')
 
-        # Skip transcription if subtitles not needed (when caption and wordTimestamps are empty intentionally)
-        skip_transcription = data.get('skipTranscription', False)
-        # Also skip if no caption/timestamps provided and branding requested without subtitles
-        if not caption and not word_timestamps and show_branding:
-            skip_transcription = True
+        # Skip transcription if explicitly requested
+        # Only auto-skip if skipTranscription is not explicitly set to false
+        skip_transcription = data.get('skipTranscription', None)
+        if skip_transcription is None:
+            # Auto-skip if no caption/timestamps provided and branding requested
+            skip_transcription = not caption and not word_timestamps and show_branding
+        else:
+            skip_transcription = bool(skip_transcription)
 
         if not video_url:
             return jsonify({'error': 'videoUrl required'}), 400
