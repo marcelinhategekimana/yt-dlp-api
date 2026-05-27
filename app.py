@@ -1051,37 +1051,88 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 60
 
-            # Step 2: Add title text in center (first N seconds) with yellow keywords
+            # Step 2: Add title with blue box background and yellow keywords
             if safe_title and os.path.exists(output_path):
                 title_output = f'{work_dir}/with_title.mp4'
 
-                # Check if any keywords should be yellow
-                title_words = safe_title.split()
-                highlight_words = [kw.upper() for kw in highlight_keywords] if highlight_keywords else []
+                # Remove emojis from title - keep only alphanumeric, spaces, and basic punctuation
+                import re
+                clean_title = re.sub(r'[^\w\s\-\'\.,!?]', '', safe_title, flags=re.UNICODE)
+                clean_title = ' '.join(clean_title.split()).strip().upper()
 
-                # Build title with mixed colors (white default, yellow for keywords)
-                # For simplicity, if keywords exist, we'll render them separately
-                has_keywords = any(word in highlight_words for word in title_words)
+                if not clean_title:
+                    clean_title = "ACTUALITES"
 
-                if has_keywords and len(title_words) <= 6:
-                    # Render each word separately with appropriate color
-                    filter_parts = []
-                    x_offset = 0
-                    word_filters = []
-
-                    # Calculate total width estimate for centering
-                    for i, word in enumerate(title_words):
-                        color = 'yellow' if word in highlight_words else 'white'
-                        # Stack drawtext filters - position words horizontally
-                        word_filters.append(
-                            f"drawtext=text={word}:fontfile={font_escaped}:fontsize=36:fontcolor={color}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
-                        )
-
-                    # Just use single line with all words for now (simpler)
-                    filter_str = f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=36:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
+                # Auto-detect keywords if none provided
+                # Keywords: numbers, short important words (DE, LA, EN, AU, A), capitalized proper nouns
+                title_words = clean_title.split()
+                if highlight_keywords:
+                    keywords_upper = [kw.upper() for kw in highlight_keywords]
                 else:
-                    # Simple white title
-                    filter_str = f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=36:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
+                    # Auto-detect: prepositions, articles, and connector words that should be yellow
+                    auto_keywords = {'DE', 'LA', 'LE', 'LES', 'DU', 'DES', 'EN', 'AU', 'AUX', 'A', 'ET', 'OU', 'UN', 'UNE', 'EST', 'SONT', 'PAR', 'POUR', 'SUR', 'DANS', 'AVEC'}
+                    keywords_upper = []
+                    for word in title_words:
+                        # Highlight: numbers, or words that are common connectors
+                        if any(c.isdigit() for c in word) or word in auto_keywords:
+                            keywords_upper.append(word)
+
+                print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}")
+
+                # Calculate title box dimensions (approximate)
+                # Each char ~20px wide at fontsize 28, padding 20px each side
+                char_count = len(clean_title)
+                box_width = min(700, max(200, char_count * 18 + 40))
+                box_height = 50
+                box_x = f"(w-{box_width})/2"
+                box_y = "(h/2)-25"
+
+                # Build filter: blue box + text with mixed colors
+                filter_parts = []
+
+                # Blue box background with border (only during title_duration)
+                filter_parts.append(f"drawbox=x={box_x}:y={box_y}:w={box_width}:h={box_height}:color=0x0047AB@0.95:t=fill:enable=between(t\\,0\\,{title_duration})")
+                filter_parts.append(f"drawbox=x={box_x}:y={box_y}:w={box_width}:h={box_height}:color=0x60A5FA:t=2:enable=between(t\\,0\\,{title_duration})")
+
+                # Render title text - white with yellow keywords
+                # Use ASS-style markup approach: render full text white, then overlay yellow words
+                # Simpler: render as single text for now, keywords in yellow need multiple passes
+
+                # Build ASS subtitle for title with yellow keywords
+                # ASS supports inline color changes with {\c&HBBGGRR&} tags
+                ass_title_parts = []
+                for word in title_words:
+                    if word in keywords_upper:
+                        # Yellow color in ASS format (BGR): 00FFFF = yellow
+                        ass_title_parts.append(f"{{\\c&H00FFFF&}}{word}{{\\c&HFFFFFF&}}")
+                    else:
+                        ass_title_parts.append(word)
+                ass_title_text = ' '.join(ass_title_parts)
+
+                # Create ASS file for title
+                title_ass_path = f'{work_dir}/title.ass'
+                title_ass_content = f"""[Script Info]
+Title: KMP Title
+ScriptType: v4.00+
+PlayResX: 720
+PlayResY: 1280
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Title,Arial Black,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,10,10,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,Title,,0,0,0,,{ass_title_text}
+"""
+                with open(title_ass_path, 'w', encoding='utf-8') as f:
+                    f.write(title_ass_content)
+
+                # Combine blue box + ASS title
+                title_ass_escaped = title_ass_path.replace(':', '\\:')
+                filter_parts.append(f"ass={title_ass_escaped}")
+
+                filter_str = ','.join(filter_parts)
 
                 title_cmd = [
                     'ffmpeg', '-y', '-i', output_path,
@@ -1093,7 +1144,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 result = subprocess.run(title_cmd, capture_output=True, text=True, timeout=600)
 
                 if result.returncode == 0 and os.path.exists(title_output):
-                    print(f"[{job_id}] Title added: {safe_title}")
+                    print(f"[{job_id}] Title added with blue box: {clean_title}")
                     output_path = title_output
                 else:
                     print(f"[{job_id}] Title error: {result.stderr[:300]}")
