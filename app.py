@@ -83,6 +83,63 @@ def health():
     })
 
 
+@app.route('/api/test-ffmpeg', methods=['GET'])
+def test_ffmpeg():
+    """Test FFmpeg text overlay capability"""
+    import subprocess
+
+    assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+    font_path = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
+
+    # Create a test video with color bars
+    test_input = '/tmp/test_input.mp4'
+    test_output = '/tmp/test_output.mp4'
+
+    # Generate test video (1 second color bars)
+    gen_cmd = [
+        'ffmpeg', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=720x1280:d=1',
+        '-c:v', 'libx264', '-t', '1', test_input
+    ]
+    gen_result = subprocess.run(gen_cmd, capture_output=True, text=True, timeout=30)
+
+    if gen_result.returncode != 0:
+        return jsonify({
+            'success': False,
+            'step': 'generate_test_video',
+            'error': gen_result.stderr[:500]
+        })
+
+    # Try text overlay
+    filter_str = f"drawtext=text='TEST':fontfile={font_path}:fontsize=48:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2"
+
+    text_cmd = [
+        'ffmpeg', '-y', '-i', test_input,
+        '-vf', filter_str,
+        '-c:v', 'libx264', '-t', '1',
+        test_output
+    ]
+    text_result = subprocess.run(text_cmd, capture_output=True, text=True, timeout=30)
+
+    output_exists = os.path.exists(test_output)
+    output_size = os.path.getsize(test_output) if output_exists else 0
+
+    # Clean up
+    for f in [test_input, test_output]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    return jsonify({
+        'success': text_result.returncode == 0 and output_size > 0,
+        'font_path': font_path,
+        'font_exists': os.path.exists(font_path),
+        'filter': filter_str,
+        'ffmpeg_returncode': text_result.returncode,
+        'ffmpeg_stderr': text_result.stderr[:1000] if text_result.stderr else None,
+        'output_exists': output_exists,
+        'output_size': output_size
+    })
+
+
 @app.route('/api/transcribe', methods=['POST'])
 def transcribe_video():
     """Transcribe a video using Whisper"""
