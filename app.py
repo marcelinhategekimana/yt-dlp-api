@@ -902,12 +902,9 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             # Blue gradient at bottom (50% height for better visibility)
             filter_parts.append(f"drawbox=x=0:y=h*0.5:w=w:h=h*0.5:color=0x0047AB@0.6:t=fill")
 
-            # Font path for Railway/Docker (Liberation fonts installed)
-            font_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-
             # Top: KIVU MORNING POST text (larger, more visible)
             filter_parts.append(
-                f"drawtext=text='KIVU MORNING POST':fontfile={font_path}:fontsize=26:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=18"
+                "drawtext=text='KIVU MORNING POST':fontsize=28:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=20"
             )
 
             # Title blue box with border (only first N seconds) - LARGER
@@ -916,17 +913,17 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             # Title text (only first N seconds) - LARGER FONT
             filter_parts.append(
-                f"drawtext=text='{safe_title}':fontfile={font_path}:fontsize=32:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y={box_y}+38:enable='between(t,0,{title_duration})'"
+                f"drawtext=text='{safe_title}':fontsize=34:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y={box_y}+40:enable='between(t,0,{title_duration})'"
             )
 
             # Bottom center: KIVUMORNINGPOST text - LARGER
             filter_parts.append(
-                f"drawtext=text='KIVUMORNINGPOST':fontfile={font_path}:fontsize=22:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-50"
+                "drawtext=text='KIVUMORNINGPOST':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-55"
             )
 
             # Bottom right: www.kivumorningpost.com
             filter_parts.append(
-                f"drawtext=text='www.kivumorningpost.com':fontfile={font_path}:fontsize=16:fontcolor=white:borderw=1:bordercolor=black:x=w-text_w-15:y=h-25"
+                "drawtext=text='www.kivumorningpost.com':fontsize=18:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-15:y=h-28"
             )
 
             filter_str = ','.join(filter_parts)
@@ -948,14 +945,14 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 50
 
-            # Second pass: add logo image overlay (top right) - LARGER
+            # Second pass: add logo image overlay (top right) - pushed down
             if os.path.exists(text_output) and has_logo:
                 logo_output = f'{work_dir}/with_logo.mp4'
                 logo_cmd = [
                     'ffmpeg', '-y',
                     '-i', text_output,
                     '-i', logo_path,
-                    '-filter_complex', '[1:v]scale=100:-1[logo];[0:v][logo]overlay=W-w-12:8',
+                    '-filter_complex', '[1:v]scale=120:-1[logo];[0:v][logo]overlay=W-w-15:35',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     logo_output
@@ -1023,16 +1020,15 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         else:
             # Fallback: simple text branding only (no image assets)
-            font_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
             filters = []
             if show_branding:
-                filters.append(f"drawtext=text='KIVU MORNING POST':fontfile={font_path}:fontsize=22:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=20")
+                filters.append("drawtext=text='KIVU MORNING POST':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=20")
                 # Title box and text only for first N seconds
                 filters.append(f"drawbox=x=10:y={box_y}:w=w-20:h=100:color=blue@0.85:t=fill:enable='between(t,0,{title_duration})'")
-                filters.append(f"drawtext=text='{safe_title}':fontfile={font_path}:fontsize=28:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable='between(t,0,{title_duration})'")
-                filters.append(f"drawtext=text='KIVUMORNINGPOST':fontfile={font_path}:fontsize=16:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-50")
+                filters.append(f"drawtext=text='{safe_title}':fontsize=30:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable='between(t,0,{title_duration})'")
+                filters.append("drawtext=text='KIVUMORNINGPOST':fontsize=18:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-55")
                 # Bottom right: website URL
-                filters.append(f"drawtext=text='www.kivumorningpost.com':fontfile={font_path}:fontsize=14:fontcolor=white:borderw=1:bordercolor=black:x=w-text_w-15:y=h-25")
+                filters.append("drawtext=text='www.kivumorningpost.com':fontsize=16:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-15:y=h-28")
 
             filter_str = ','.join(filters) if filters else None
 
