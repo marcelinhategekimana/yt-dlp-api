@@ -974,8 +974,14 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             filter_parts = []
 
-            # Blue overlay at bottom 25% of video
-            filter_parts.append("drawbox=x=0:y=ih*0.75:w=iw:h=ih*0.25:color=0x0047AB@0.7:t=fill")
+            # Blue gradient overlay at bottom - smooth fade like Photoshop
+            # Multiple layers with increasing opacity for smooth transition
+            filter_parts.append("drawbox=x=0:y=ih*0.68:w=iw:h=ih*0.04:color=0x0047AB@0.05:t=fill")
+            filter_parts.append("drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.04:color=0x0047AB@0.15:t=fill")
+            filter_parts.append("drawbox=x=0:y=ih*0.76:w=iw:h=ih*0.04:color=0x0047AB@0.25:t=fill")
+            filter_parts.append("drawbox=x=0:y=ih*0.80:w=iw:h=ih*0.04:color=0x0047AB@0.40:t=fill")
+            filter_parts.append("drawbox=x=0:y=ih*0.84:w=iw:h=ih*0.04:color=0x0047AB@0.55:t=fill")
+            filter_parts.append("drawbox=x=0:y=ih*0.88:w=iw:h=ih*0.12:color=0x0047AB@0.70:t=fill")
 
             # Top: KIVU MORNING POST text - pushed down below logo
             filter_parts.append(
