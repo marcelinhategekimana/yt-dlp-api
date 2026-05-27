@@ -1109,6 +1109,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         jobs[job_id]['progress'] = 80
 
         # Add subtitles if we have captions - use ASS for karaoke-style word highlighting
+        print(f"[{job_id}] Caption check: caption={bool(caption)}, word_timestamps={len(word_timestamps) if word_timestamps else 0}")
         if caption or (word_timestamps and len(word_timestamps) > 0):
             final_output = f'{work_dir}/final_with_subs.mp4'
 
