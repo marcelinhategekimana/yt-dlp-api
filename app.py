@@ -205,11 +205,23 @@ def transcribe_video_sync():
         video_path = f'{work_dir}/video.mp4'
         audio_path = f'{work_dir}/audio.wav'
 
-        # Download
-        response = requests.get(video_url, stream=True, timeout=120)
-        with open(video_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Download - use yt-dlp for social media URLs, requests for direct URLs
+        is_direct_url = video_url.endswith('.mp4') or 'video.twimg.com' in video_url or 'blob:' in video_url
+
+        if is_direct_url:
+            response = requests.get(video_url, stream=True, timeout=120)
+            with open(video_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        else:
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': video_path,
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
 
         # Extract audio
         subprocess.run([
@@ -274,11 +286,25 @@ def transcribe_video_task(job_id, video_url, language):
         video_path = f'{work_dir}/video.mp4'
         audio_path = f'{work_dir}/audio.wav'
 
-        # Download video
-        response = requests.get(video_url, stream=True, timeout=300)
-        with open(video_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Download video - use yt-dlp for social media URLs, requests for direct URLs
+        is_direct_url = video_url.endswith('.mp4') or 'video.twimg.com' in video_url or 'blob:' in video_url
+
+        if is_direct_url:
+            # Direct video URL - use requests
+            response = requests.get(video_url, stream=True, timeout=300)
+            with open(video_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        else:
+            # Social media URL - use yt-dlp
+            ydl_opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': video_path,
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
 
         jobs[job_id]['progress'] = 30
         jobs[job_id]['status'] = 'extracting_audio'
