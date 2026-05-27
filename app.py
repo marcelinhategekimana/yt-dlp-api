@@ -1080,19 +1080,20 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}")
 
                 # Calculate title box dimensions (approximate)
-                # Each char ~20px wide at fontsize 28, padding 20px each side
+                # Each char ~18px wide at fontsize 26, padding 30px each side
                 char_count = len(clean_title)
-                box_width = min(700, max(200, char_count * 18 + 40))
-                box_height = 50
+                box_width = min(700, max(200, char_count * 16 + 60))
+                box_height = 55
+                # Center the box: x centered, y at middle of screen (640) minus half box height
                 box_x = f"(w-{box_width})/2"
-                box_y = "(h/2)-25"
+                box_y = f"(h/2)-{box_height//2}"  # Centers at h/2
 
                 # Build filter: blue box + text with mixed colors
                 filter_parts = []
 
                 # Blue box background with border (only during title_duration)
                 filter_parts.append(f"drawbox=x={box_x}:y={box_y}:w={box_width}:h={box_height}:color=0x0047AB@0.95:t=fill:enable=between(t\\,0\\,{title_duration})")
-                filter_parts.append(f"drawbox=x={box_x}:y={box_y}:w={box_width}:h={box_height}:color=0x60A5FA:t=2:enable=between(t\\,0\\,{title_duration})")
+                filter_parts.append(f"drawbox=x={box_x}:y={box_y}:w={box_width}:h={box_height}:color=0x60A5FA:t=3:enable=between(t\\,0\\,{title_duration})")
 
                 # Render title text - white with yellow keywords
                 # Use ASS-style markup approach: render full text white, then overlay yellow words
@@ -1109,8 +1110,9 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                         ass_title_parts.append(word)
                 ass_title_text = ' '.join(ass_title_parts)
 
-                # Create ASS file for title
+                # Create ASS file for title - use \pos tag to center exactly in middle
                 title_ass_path = f'{work_dir}/title.ass'
+                # Position at center of 720x1280 = (360, 640)
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
 ScriptType: v4.00+
@@ -1119,11 +1121,11 @@ PlayResY: 1280
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Title,Arial Black,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,5,10,10,0,1
+Style: Title,Arial Black,26,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,Title,,0,0,0,,{ass_title_text}
+Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,Title,,0,0,0,,{{\\pos(360,640)}}{ass_title_text}
 """
                 with open(title_ass_path, 'w', encoding='utf-8') as f:
                     f.write(title_ass_content)
