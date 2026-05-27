@@ -63,12 +63,20 @@ def health():
     except ImportError:
         pass
 
+    # Check assets
+    assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+    logo_path = os.path.join(assets_dir, 'kmp-logo-v2.png')
+
     return jsonify({
         'status': 'ok',
         'service': 'reclip-api',
         'whisper': whisper_installed,
         'model': os.getenv('WHISPER_MODEL', 'tiny'),
-        'gpu': os.getenv('GPU_ENABLED', 'false')
+        'gpu': os.getenv('GPU_ENABLED', 'false'),
+        'assets_dir': assets_dir,
+        'assets_exist': os.path.isdir(assets_dir),
+        'logo_exists': os.path.exists(logo_path),
+        'logo_path': logo_path
     })
 
 
@@ -489,6 +497,15 @@ def add_captions():
         title_position = data.get('titlePosition', 'center')  # top, center, bottom
         highlight_keywords = data.get('highlightKeywords', [])
 
+        # Caption style options: 'bottom' (default), 'top', 'center'
+        caption_style = data.get('captionStyle', 'bottom')
+
+        # Skip transcription if subtitles not needed (when caption and wordTimestamps are empty intentionally)
+        skip_transcription = data.get('skipTranscription', False)
+        # Also skip if no caption/timestamps provided and branding requested without subtitles
+        if not caption and not word_timestamps and show_branding:
+            skip_transcription = True
+
         if not video_url:
             return jsonify({'error': 'videoUrl required'}), 400
 
@@ -499,7 +516,7 @@ def add_captions():
         thread = threading.Thread(
             target=process_video_with_overlays,
             args=(job_id, video_url, caption, word_timestamps, title, title_duration,
-                  show_branding, title_position, highlight_keywords)
+                  show_branding, title_position, highlight_keywords, caption_style, skip_transcription)
         )
         thread.start()
 
@@ -560,33 +577,149 @@ def generate_srt_from_caption(caption, title, title_duration, video_duration=60)
     return srt_content
 
 
+def generate_ass_captions(word_timestamps, video_width=720, video_height=1280, style='default'):
+    """
+    Generate ASS subtitles with ClippedAI-style formatting:
+    - Large bold font (60px for 720p)
+    - Smart word grouping (max 25 chars per line)
+    - Top-center positioning
+    - Yellow highlighting for numbers/keywords
+    - Thick outline for readability
+    """
+
+    # ASS header with professional styles for 9:16 vertical video
+    # PlayRes: 720x1280 (9:16 format)
+    # Bottom captions positioned ABOVE the footer (social icons at ~80px from bottom)
+    # MarginV=200 ensures captions are above the KMP footer
+    ass_content = """[Script Info]
+Title: KMP Captions
+ScriptType: v4.00+
+PlayResX: 720
+PlayResY: 1280
+WrapStyle: 1
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial Black,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,8,15,15,120,1
+Style: Yellow,Arial Black,48,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,8,15,15,120,1
+Style: Bottom,Arial Black,42,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,15,15,200,1
+Style: BottomYellow,Arial Black,42,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,15,15,200,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    if not word_timestamps:
+        return ass_content
+
+    # Choose base style based on position preference
+    base_style = 'Bottom' if style == 'bottom' else 'Default'
+    highlight_style = 'BottomYellow' if style == 'bottom' else 'Yellow'
+
+    # Format timestamp for ASS (H:MM:SS.cc)
+    def format_time(t):
+        h = int(t // 3600)
+        m = int((t % 3600) // 60)
+        s = int(t % 60)
+        cs = int((t - int(t)) * 100)
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+    # Smart word grouping: max 25 chars per cue, or gap > 0.5s
+    cues = []
+    current_cue = {
+        'words': [],
+        'start_time': None,
+        'end_time': None
+    }
+
+    for w in word_timestamps:
+        word = w.get('word', '').strip()
+        if not word:
+            continue
+
+        start_time = w.get('start', 0)
+        end_time = w.get('end', 0)
+
+        should_start_new = False
+        if current_cue['start_time'] is None:
+            should_start_new = True
+        elif len(' '.join(current_cue['words']) + ' ' + word) > 25:
+            # Line too long, start new cue
+            should_start_new = True
+        elif start_time - current_cue['end_time'] > 0.5:
+            # Gap too long, start new cue
+            should_start_new = True
+
+        if should_start_new:
+            # Save previous cue if exists
+            if current_cue['words']:
+                cues.append(current_cue)
+            # Start new cue
+            current_cue = {
+                'words': [word],
+                'start_time': start_time,
+                'end_time': end_time
+            }
+        else:
+            # Add to current cue
+            current_cue['words'].append(word)
+            current_cue['end_time'] = end_time
+
+    # Don't forget the last cue
+    if current_cue['words']:
+        cues.append(current_cue)
+
+    # Generate dialogue events with smart color highlighting
+    for cue in cues:
+        start_str = format_time(cue['start_time'])
+        end_str = format_time(cue['end_time'])
+
+        # Build text with color highlighting for numbers/currency
+        line_parts = []
+        for word in cue['words']:
+            word_upper = word.upper()
+            # Check if word contains numbers or currency
+            has_number = any(char.isdigit() for char in word)
+            has_currency = '$' in word or '€' in word or '%' in word
+            is_formatted_number = ',' in word and word.replace(',', '').replace('.', '').isdigit()
+
+            if has_number or has_currency or is_formatted_number:
+                # Apply yellow highlight style
+                line_parts.append('{\\rYellow}' + word_upper + '{\\r' + base_style + '}')
+            else:
+                line_parts.append(word_upper)
+
+        line_text = ' '.join(line_parts)
+
+        ass_content += f"Dialogue: 0,{start_str},{end_str},{base_style},,0,0,0,,{line_text}\n"
+
+    return ass_content
+
+
+# Keep old function name as alias for backwards compatibility
+def generate_ass_karaoke(word_timestamps, video_width=720, video_height=1280):
+    """Alias for generate_ass_captions with bottom positioning"""
+    return generate_ass_captions(word_timestamps, video_width, video_height, style='bottom')
+
+
 def generate_srt_from_timestamps(word_timestamps, title, title_duration):
-    """Generate SRT content from word timestamps (synced subtitles)"""
+    """Generate SRT content from word timestamps (synced subtitles) - DEPRECATED, use ASS"""
     srt_content = ""
     cue_number = 1
-
-    # Add title as first subtitle
-    if title:
-        srt_content += f"{cue_number}\n"
-        srt_content += f"00:00:00,000 --> 00:00:{title_duration:02d},000\n"
-        srt_content += f"{title.upper()}\n\n"
-        cue_number += 1
 
     if not word_timestamps:
         return srt_content
 
-    # Group words into 2-word chunks for display
-    for i in range(0, len(word_timestamps), 2):
-        word1 = word_timestamps[i]
-        word2 = word_timestamps[i + 1] if i + 1 < len(word_timestamps) else None
+    # Group words into 3-word chunks for display
+    for i in range(0, len(word_timestamps), 3):
+        words = word_timestamps[i:i+3]
+        if not words:
+            continue
 
-        text = word1['word']
-        start = word1['start']
-        end = word1['end']
-
-        if word2:
-            text += ' ' + word2['word']
-            end = word2['end']
+        text = ' '.join(w['word'] for w in words)
+        start = words[0]['start']
+        end = words[-1]['end']
 
         # Format timestamps
         start_h, start_m = divmod(int(start), 3600)
@@ -606,7 +739,7 @@ def generate_srt_from_timestamps(word_timestamps, title, title_duration):
 
 
 def process_video_with_overlays(job_id, video_url, caption, word_timestamps, title, title_duration,
-                                  show_branding, title_position, highlight_keywords):
+                                  show_branding, title_position, highlight_keywords, caption_style='bottom', skip_transcription=False):
     """Background task to process video: 9:16 ratio + KMP overlays + captions"""
     import subprocess
     import requests
@@ -637,8 +770,8 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             for chunk in video_response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        # Auto-transcribe if no word timestamps provided
-        if not word_timestamps or len(word_timestamps) == 0:
+        # Auto-transcribe if no word timestamps provided (and not explicitly skipped)
+        if (not word_timestamps or len(word_timestamps) == 0) and not skip_transcription:
             print(f"[{job_id}] No timestamps provided, auto-transcribing with Whisper...")
             jobs[job_id]['status'] = 'transcribing'
             jobs[job_id]['progress'] = 10
@@ -766,26 +899,31 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             # Build complex filter with image overlays
             filter_parts = []
 
-            # Blue gradient at bottom (60% height)
-            filter_parts.append(f"drawbox=x=0:y=h*0.4:w=w:h=h*0.6:color=0x0047AB@0.7:t=fill")
+            # Blue gradient at bottom (50% height for better visibility)
+            filter_parts.append(f"drawbox=x=0:y=h*0.5:w=w:h=h*0.5:color=0x0047AB@0.6:t=fill")
 
-            # Top: KIVU MORNING POST text
+            # Top: KIVU MORNING POST text (larger, more visible)
             filter_parts.append(
-                "drawtext=text='KIVU MORNING POST':fontsize=18:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=15"
+                "drawtext=text='KIVU MORNING POST':fontsize=26:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=18"
             )
 
-            # Title blue box with border (only first 5 seconds)
-            filter_parts.append(f"drawbox=x=8:y={box_y}:w=w-16:h=90:color=0x0047AB@0.95:t=fill:enable='between(t,0,{title_duration})'")
-            filter_parts.append(f"drawbox=x=8:y={box_y}:w=w-16:h=90:color=0x60A5FA:t=3:enable='between(t,0,{title_duration})'")
+            # Title blue box with border (only first N seconds) - LARGER
+            filter_parts.append(f"drawbox=x=10:y={box_y}:w=w-20:h=110:color=0x0047AB@0.95:t=fill:enable='between(t,0,{title_duration})'")
+            filter_parts.append(f"drawbox=x=10:y={box_y}:w=w-20:h=110:color=0x60A5FA:t=4:enable='between(t,0,{title_duration})'")
 
-            # Title text (only first 5 seconds)
+            # Title text (only first N seconds) - LARGER FONT
             filter_parts.append(
-                f"drawtext=text='{safe_title}':fontsize=24:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y={box_y}+30:enable='between(t,0,{title_duration})'"
+                f"drawtext=text='{safe_title}':fontsize=32:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y={box_y}+38:enable='between(t,0,{title_duration})'"
             )
 
-            # Bottom: KIVUMORNINGPOST text
+            # Bottom center: KIVUMORNINGPOST text - LARGER
             filter_parts.append(
-                "drawtext=text='KIVUMORNINGPOST':fontsize=14:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-25"
+                "drawtext=text='KIVUMORNINGPOST':fontsize=22:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-50"
+            )
+
+            # Bottom right: www.kivumorningpost.com
+            filter_parts.append(
+                "drawtext=text='www.kivumorningpost.com':fontsize=16:fontcolor=white:borderw=1:bordercolor=black:x=w-text_w-15:y=h-25"
             )
 
             filter_str = ','.join(filter_parts)
@@ -807,14 +945,14 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 50
 
-            # Second pass: add logo image overlay (top right)
+            # Second pass: add logo image overlay (top right) - LARGER
             if os.path.exists(text_output) and has_logo:
                 logo_output = f'{work_dir}/with_logo.mp4'
                 logo_cmd = [
                     'ffmpeg', '-y',
                     '-i', text_output,
                     '-i', logo_path,
-                    '-filter_complex', '[1:v]scale=60:-1[logo];[0:v][logo]overlay=W-w-15:40',
+                    '-filter_complex', '[1:v]scale=100:-1[logo];[0:v][logo]overlay=W-w-12:8',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     logo_output
@@ -838,7 +976,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                     'ffmpeg', '-y',
                     '-i', output_path,
                     '-i', butterfly_path,
-                    '-filter_complex', '[1:v]scale=40:-1[bf];[0:v][bf]overlay=(W-w)/2:H-70',
+                    '-filter_complex', '[1:v]scale=70:-1[bf];[0:v][bf]overlay=(W-w)/2:H-90',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     butterfly_output
@@ -863,12 +1001,12 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                     '-i', social_tt,
                     '-i', social_yt,
                     '-filter_complex',
-                    '[1:v]scale=24:-1[fb];[2:v]scale=24:-1[ig];[3:v]scale=24:-1[tw];[4:v]scale=24:-1[tt];[5:v]scale=24:-1[yt];'
-                    '[0:v][fb]overlay=(W/2)-70:H-50[v1];'
-                    '[v1][ig]overlay=(W/2)-35:H-50[v2];'
-                    '[v2][tw]overlay=(W/2):H-50[v3];'
-                    '[v3][tt]overlay=(W/2)+35:H-50[v4];'
-                    '[v4][yt]overlay=(W/2)+70:H-50',
+                    '[1:v]scale=36:-1[fb];[2:v]scale=36:-1[ig];[3:v]scale=36:-1[tw];[4:v]scale=36:-1[tt];[5:v]scale=36:-1[yt];'
+                    '[0:v][fb]overlay=(W/2)-100:H-55[v1];'
+                    '[v1][ig]overlay=(W/2)-50:H-55[v2];'
+                    '[v2][tw]overlay=(W/2):H-55[v3];'
+                    '[v3][tt]overlay=(W/2)+50:H-55[v4];'
+                    '[v4][yt]overlay=(W/2)+100:H-55',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     socials_output
@@ -888,7 +1026,9 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 # Title box and text only for first N seconds
                 filters.append(f"drawbox=x=10:y={box_y}:w=w-20:h=100:color=blue@0.85:t=fill:enable='between(t,0,{title_duration})'")
                 filters.append(f"drawtext=text='{safe_title}':fontsize=28:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable='between(t,0,{title_duration})'")
-                filters.append("drawtext=text='KIVUMORNINGPOST':fontsize=16:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-35")
+                filters.append("drawtext=text='KIVUMORNINGPOST':fontsize=16:fontcolor=white:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-50")
+                # Bottom right: website URL
+                filters.append("drawtext=text='www.kivumorningpost.com':fontsize=14:fontcolor=white:borderw=1:bordercolor=black:x=w-text_w-15:y=h-25")
 
             filter_str = ','.join(filters) if filters else None
 
@@ -912,34 +1052,48 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         jobs[job_id]['progress'] = 80
 
-        # Add subtitles if we have captions
-        srt_path = None
+        # Add subtitles if we have captions - use ASS for karaoke-style word highlighting
         if caption or (word_timestamps and len(word_timestamps) > 0):
-            if word_timestamps and len(word_timestamps) > 0:
-                srt_content = generate_srt_from_timestamps(word_timestamps, '', 0)
-            else:
-                srt_content = generate_srt_from_caption(caption, '', 0, video_duration)
-
-            srt_path = f'{work_dir}/captions.srt'
-            with open(srt_path, 'w', encoding='utf-8') as f:
-                f.write(srt_content)
-            print(f"[{job_id}] SRT created: {len(srt_content)} chars")
-
-            # Add subtitles to output - smaller text, positioned above social bar
             final_output = f'{work_dir}/final_with_subs.mp4'
-            # Escape path for FFmpeg (replace : with \:)
-            srt_escaped = srt_path.replace(':', '\\:')
-            sub_cmd = [
-                'ffmpeg', '-y', '-i', output_path,
-                '-vf', f"subtitles={srt_escaped}:force_style='FontName=Arial,FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                '-c:a', 'copy',
-                final_output
-            ]
+
+            if word_timestamps and len(word_timestamps) > 0:
+                # Use ASS format with ClippedAI-style captions
+                ass_content = generate_ass_captions(word_timestamps, style=caption_style)
+                sub_path = f'{work_dir}/captions.ass'
+                with open(sub_path, 'w', encoding='utf-8') as f:
+                    f.write(ass_content)
+                print(f"[{job_id}] ASS captions created: {len(word_timestamps)} words, style={caption_style}")
+
+                # Escape path for FFmpeg
+                sub_escaped = sub_path.replace(':', '\\:')
+                sub_cmd = [
+                    'ffmpeg', '-y', '-i', output_path,
+                    '-vf', f"ass={sub_escaped}",
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                    '-c:a', 'copy',
+                    final_output
+                ]
+            else:
+                # Fallback to SRT for plain caption text
+                srt_content = generate_srt_from_caption(caption, '', 0, video_duration)
+                sub_path = f'{work_dir}/captions.srt'
+                with open(sub_path, 'w', encoding='utf-8') as f:
+                    f.write(srt_content)
+                print(f"[{job_id}] SRT captions created: {len(srt_content)} chars")
+
+                sub_escaped = sub_path.replace(':', '\\:')
+                sub_cmd = [
+                    'ffmpeg', '-y', '-i', output_path,
+                    '-vf', f"subtitles={sub_escaped}:force_style='FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=150,Alignment=2'",
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                    '-c:a', 'copy',
+                    final_output
+                ]
+
             result = subprocess.run(sub_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode == 0 and os.path.exists(final_output):
                 output_path = final_output
-                print(f"[{job_id}] Subtitles added")
+                print(f"[{job_id}] Karaoke captions burned into video")
             else:
                 print(f"[{job_id}] Subtitle error: {result.stderr[:200]}")
 
@@ -1147,6 +1301,451 @@ def crop_video_task(job_id, video_url, ratio, mode, quality):
     except Exception as e:
         print(f"[{job_id}] Crop error: {str(e)}")
         jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
+@app.route('/api/clip-video', methods=['POST'])
+def clip_video():
+    """
+    Extract clip(s) from a video with auto-detection or manual timestamps.
+
+    Params:
+    - videoUrl: Source video URL
+    - mode: 'auto' (AI detection) or 'manual' (specify times)
+    - startTime: Start time in seconds (manual mode)
+    - endTime: End time in seconds (manual mode)
+    - maxClips: Maximum clips to extract (auto mode, default: 3)
+    - minDuration: Minimum clip duration (default: 30)
+    - maxDuration: Maximum clip duration (default: 60)
+    - addCaptions: Whether to add captions (default: true)
+    - captionStyle: Caption style (default: 'bottom')
+    """
+    try:
+        data = request.get_json()
+        video_url = data.get('videoUrl')
+        mode = data.get('mode', 'manual')  # 'auto' or 'manual'
+        start_time = data.get('startTime', 0)
+        end_time = data.get('endTime')
+        max_clips = data.get('maxClips', 3)
+        min_duration = data.get('minDuration', 30)
+        max_duration = data.get('maxDuration', 60)
+        add_captions = data.get('addCaptions', True)
+        caption_style = data.get('captionStyle', 'bottom')
+        title = data.get('title', '')
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl required'}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'processing', 'progress': 0}
+
+        # Start clipping in background
+        thread = threading.Thread(
+            target=clip_video_task,
+            args=(job_id, video_url, mode, start_time, end_time,
+                  max_clips, min_duration, max_duration, add_captions, caption_style, title)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def detect_scene_changes(video_path, threshold=0.3):
+    """Detect scene changes in video using FFmpeg scene detection"""
+    import subprocess
+    import json
+
+    try:
+        # Use FFmpeg to detect scenes
+        cmd = [
+            'ffprobe', '-v', 'quiet',
+            '-show_entries', 'frame=pts_time,pkt_dts_time',
+            '-select_streams', 'v',
+            '-of', 'json',
+            '-f', 'lavfi',
+            f"movie={video_path},select='gt(scene,{threshold})',showinfo"
+        ]
+
+        # Simpler approach: use ffmpeg scene detection
+        scene_cmd = [
+            'ffmpeg', '-i', video_path,
+            '-vf', f"select='gt(scene,{threshold})',showinfo",
+            '-f', 'null', '-'
+        ]
+
+        result = subprocess.run(scene_cmd, capture_output=True, text=True, timeout=120)
+
+        # Parse scene timestamps from ffmpeg output
+        scenes = [0.0]  # Always start at 0
+        for line in result.stderr.split('\n'):
+            if 'pts_time:' in line:
+                try:
+                    pts_match = line.split('pts_time:')[1].split()[0]
+                    pts_time = float(pts_match)
+                    if pts_time > scenes[-1] + 5:  # At least 5s apart
+                        scenes.append(pts_time)
+                except:
+                    pass
+
+        return scenes
+    except Exception as e:
+        print(f"Scene detection error: {e}")
+        return [0.0]
+
+
+def find_best_clips(video_path, transcription_result, min_duration=30, max_duration=60, max_clips=3):
+    """
+    Find the best clips based on speech density and content.
+    Returns list of (start_time, end_time, score) tuples.
+    """
+    segments = transcription_result.get('segments', [])
+    if not segments:
+        return []
+
+    # Get video duration
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'json', video_path],
+            capture_output=True, text=True, timeout=30
+        )
+        import json
+        probe_data = json.loads(result.stdout)
+        video_duration = float(probe_data.get('format', {}).get('duration', 0))
+    except:
+        video_duration = segments[-1]['end'] if segments else 60
+
+    # Build clips based on speech segments
+    clips = []
+    window_start = 0
+
+    while window_start < video_duration - min_duration:
+        best_end = window_start + min_duration
+        best_score = 0
+
+        # Try different end points
+        for end_offset in range(min_duration, min(max_duration + 1, int(video_duration - window_start) + 1), 5):
+            window_end = window_start + end_offset
+
+            # Count words in this window
+            word_count = 0
+            engagement_words = 0
+            for seg in segments:
+                if seg['start'] >= window_start and seg['end'] <= window_end:
+                    words = seg.get('text', '').split()
+                    word_count += len(words)
+                    for w in words:
+                        if any(c.isdigit() for c in w) or '$' in w or '%' in w:
+                            engagement_words += 1
+
+            duration = window_end - window_start
+            word_density = word_count / duration if duration > 0 else 0
+            engagement_ratio = engagement_words / max(word_count, 1)
+
+            # Score: word density (50%) + engagement (30%) + optimal duration (20%)
+            duration_score = 1.0 - abs(duration - 45) / 45  # Prefer ~45s clips
+            score = word_density * 0.5 + engagement_ratio * 0.3 + max(duration_score, 0) * 0.2
+
+            if score > best_score:
+                best_score = score
+                best_end = window_end
+
+        if best_score > 0.1:  # Minimum quality threshold
+            clips.append((window_start, best_end, best_score))
+
+        # Move window forward
+        window_start = best_end + 5  # 5s gap between clips
+
+    # Sort by score and return top clips
+    clips.sort(key=lambda x: x[2], reverse=True)
+    return clips[:max_clips]
+
+
+def clip_video_task(job_id, video_url, mode, start_time, end_time,
+                    max_clips, min_duration, max_duration, add_captions, caption_style, title):
+    """Background task to extract and process video clips"""
+    import subprocess
+    import requests
+
+    try:
+        os.makedirs('/tmp/clips', exist_ok=True)
+        work_dir = f'/tmp/clips/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+
+        jobs[job_id]['status'] = 'downloading'
+        jobs[job_id]['progress'] = 5
+
+        # Download video
+        print(f"[{job_id}] Downloading video...")
+        video_response = requests.get(video_url, stream=True, timeout=300)
+        input_path = f'{work_dir}/input.mp4'
+        with open(input_path, 'wb') as f:
+            for chunk in video_response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        jobs[job_id]['progress'] = 15
+
+        # Get video duration
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'json', input_path],
+            capture_output=True, text=True, timeout=30
+        )
+        import json as json_module
+        probe_data = json_module.loads(result.stdout)
+        video_duration = float(probe_data.get('format', {}).get('duration', 60))
+
+        print(f"[{job_id}] Video duration: {video_duration}s")
+
+        clips_to_process = []
+
+        if mode == 'auto':
+            # Auto-detect best clips using transcription
+            jobs[job_id]['status'] = 'transcribing'
+            jobs[job_id]['progress'] = 20
+
+            print(f"[{job_id}] Auto-detecting clips with transcription...")
+
+            # Transcribe first
+            model = get_whisper_model()
+            if model:
+                audio_path = f'{work_dir}/audio.wav'
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', input_path,
+                    '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                    audio_path
+                ], capture_output=True, check=True, timeout=120)
+
+                jobs[job_id]['progress'] = 30
+
+                result = model.transcribe(audio_path, word_timestamps=True, verbose=False)
+                jobs[job_id]['progress'] = 50
+
+                # Find best clips based on content
+                best_clips = find_best_clips(
+                    input_path, result,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                    max_clips=max_clips
+                )
+
+                if best_clips:
+                    for i, (clip_start, clip_end, score) in enumerate(best_clips):
+                        # Get word timestamps for this clip
+                        clip_words = []
+                        for seg in result.get('segments', []):
+                            for word in seg.get('words', []):
+                                word_start = word.get('start', 0)
+                                word_end = word.get('end', 0)
+                                if word_start >= clip_start and word_end <= clip_end:
+                                    clip_words.append({
+                                        'word': word.get('word', '').strip(),
+                                        'start': word_start - clip_start,  # Relative to clip start
+                                        'end': word_end - clip_start
+                                    })
+
+                        clips_to_process.append({
+                            'index': i,
+                            'start': clip_start,
+                            'end': clip_end,
+                            'score': score,
+                            'word_timestamps': clip_words
+                        })
+
+                    print(f"[{job_id}] Found {len(clips_to_process)} clips")
+                else:
+                    # Fallback: split video into equal chunks
+                    print(f"[{job_id}] No good clips found, splitting evenly")
+                    chunk_duration = min(max_duration, video_duration / max_clips)
+                    for i in range(min(max_clips, int(video_duration / chunk_duration))):
+                        clips_to_process.append({
+                            'index': i,
+                            'start': i * chunk_duration,
+                            'end': min((i + 1) * chunk_duration, video_duration),
+                            'score': 0.5,
+                            'word_timestamps': []
+                        })
+            else:
+                # No Whisper, use scene detection
+                print(f"[{job_id}] Whisper not available, using scene detection")
+                scenes = detect_scene_changes(input_path)
+                for i in range(min(max_clips, len(scenes))):
+                    clip_start = scenes[i]
+                    clip_end = scenes[i + 1] if i + 1 < len(scenes) else video_duration
+                    if clip_end - clip_start >= min_duration:
+                        clips_to_process.append({
+                            'index': i,
+                            'start': clip_start,
+                            'end': min(clip_start + max_duration, clip_end),
+                            'score': 0.5,
+                            'word_timestamps': []
+                        })
+
+        else:
+            # Manual mode - single clip with specified times
+            clip_end_time = end_time if end_time else min(start_time + max_duration, video_duration)
+            clips_to_process.append({
+                'index': 0,
+                'start': start_time,
+                'end': clip_end_time,
+                'score': 1.0,
+                'word_timestamps': []
+            })
+
+            # Transcribe the clip portion if captions needed
+            if add_captions:
+                jobs[job_id]['status'] = 'transcribing'
+                model = get_whisper_model()
+                if model:
+                    # Extract clip audio first
+                    clip_audio_path = f'{work_dir}/clip_audio.wav'
+                    subprocess.run([
+                        'ffmpeg', '-y', '-i', input_path,
+                        '-ss', str(start_time), '-t', str(clip_end_time - start_time),
+                        '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                        clip_audio_path
+                    ], capture_output=True, check=True, timeout=120)
+
+                    result = model.transcribe(clip_audio_path, word_timestamps=True, verbose=False)
+
+                    clip_words = []
+                    for seg in result.get('segments', []):
+                        for word in seg.get('words', []):
+                            clip_words.append({
+                                'word': word.get('word', '').strip(),
+                                'start': word.get('start', 0),
+                                'end': word.get('end', 0)
+                            })
+                    clips_to_process[0]['word_timestamps'] = clip_words
+
+        jobs[job_id]['progress'] = 60
+
+        # Process each clip
+        output_clips = []
+        assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+
+        for clip_info in clips_to_process:
+            clip_idx = clip_info['index']
+            clip_start = clip_info['start']
+            clip_end = clip_info['end']
+            clip_words = clip_info.get('word_timestamps', [])
+
+            jobs[job_id]['status'] = f'processing clip {clip_idx + 1}/{len(clips_to_process)}'
+            print(f"[{job_id}] Processing clip {clip_idx + 1}: {clip_start:.1f}s - {clip_end:.1f}s")
+
+            # Extract clip
+            clip_path = f'{work_dir}/clip_{clip_idx}.mp4'
+            subprocess.run([
+                'ffmpeg', '-y', '-i', input_path,
+                '-ss', str(clip_start), '-t', str(clip_end - clip_start),
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-c:a', 'aac', '-b:a', '128k',
+                clip_path
+            ], capture_output=True, check=True, timeout=300)
+
+            # Crop to 9:16
+            cropped_path = f'{work_dir}/clip_{clip_idx}_916.mp4'
+            scale_filter = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280"
+            subprocess.run([
+                'ffmpeg', '-y', '-i', clip_path,
+                '-vf', scale_filter,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                '-c:a', 'aac', '-b:a', '128k',
+                cropped_path
+            ], capture_output=True, check=True, timeout=300)
+
+            output_path = cropped_path
+
+            # Add captions if available
+            if add_captions and clip_words:
+                ass_content = generate_ass_captions(clip_words, style=caption_style)
+                ass_path = f'{work_dir}/clip_{clip_idx}.ass'
+                with open(ass_path, 'w', encoding='utf-8') as f:
+                    f.write(ass_content)
+
+                captioned_path = f'{work_dir}/clip_{clip_idx}_captioned.mp4'
+                ass_escaped = ass_path.replace(':', '\\:')
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', output_path,
+                    '-vf', f"ass={ass_escaped}",
+                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                    '-c:a', 'copy',
+                    captioned_path
+                ], capture_output=True, check=True, timeout=300)
+
+                if os.path.exists(captioned_path):
+                    output_path = captioned_path
+                    print(f"[{job_id}] Added {len(clip_words)} caption words to clip {clip_idx + 1}")
+
+            output_clips.append({
+                'index': clip_idx,
+                'path': output_path,
+                'start': clip_start,
+                'end': clip_end,
+                'duration': clip_end - clip_start,
+                'score': clip_info.get('score', 0),
+                'word_count': len(clip_words)
+            })
+
+        jobs[job_id]['progress'] = 95
+
+        # Return results
+        jobs[job_id] = {
+            'status': 'done',
+            'progress': 100,
+            'clips': [
+                {
+                    'index': c['index'],
+                    'filepath': c['path'],
+                    'filename': f"clip_{c['index']}_{job_id}.mp4",
+                    'start': c['start'],
+                    'end': c['end'],
+                    'duration': c['duration'],
+                    'score': c['score'],
+                    'word_count': c['word_count']
+                }
+                for c in output_clips
+            ],
+            'total_clips': len(output_clips)
+        }
+
+        print(f"[{job_id}] Clipping complete: {len(output_clips)} clips created")
+
+    except Exception as e:
+        print(f"[{job_id}] Clip error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
+@app.route('/api/clip-file/<job_id>/<int:clip_index>', methods=['GET'])
+def get_clip_file(job_id, clip_index):
+    """Download a specific clip from a completed job"""
+    if job_id not in jobs:
+        return jsonify({'error': 'Job not found'}), 404
+
+    job = jobs[job_id]
+    if job.get('status') != 'done':
+        return jsonify({'error': 'Job not complete'}), 400
+
+    clips = job.get('clips', [])
+    if clip_index >= len(clips):
+        return jsonify({'error': 'Clip not found'}), 404
+
+    clip = clips[clip_index]
+    filepath = clip.get('filepath')
+
+    if not filepath or not os.path.exists(filepath):
+        return jsonify({'error': 'Clip file not found'}), 404
+
+    return send_file(
+        filepath,
+        as_attachment=True,
+        download_name=clip.get('filename', f'clip_{clip_index}.mp4')
+    )
 
 
 if __name__ == '__main__':
