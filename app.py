@@ -521,6 +521,10 @@ def get_status(job_id):
         response['word_timestamps'] = job.get('word_timestamps')
         response['duration'] = job.get('duration')
 
+    # Include transcribed_words count from add-captions jobs
+    if 'transcribed_words' in job:
+        response['transcribed_words'] = job.get('transcribed_words')
+
     return jsonify(response)
 
 @app.route('/api/file/<job_id>', methods=['GET'])
@@ -886,13 +890,22 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 if model:
                     # Extract audio
                     audio_path = f'{work_dir}/audio.wav'
-                    subprocess.run([
+                    audio_result = subprocess.run([
                         'ffmpeg', '-y', '-i', input_path,
                         '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
                         audio_path
-                    ], capture_output=True, check=True, timeout=120)
+                    ], capture_output=True, text=True, timeout=120)
+
+                    if audio_result.returncode != 0:
+                        print(f"[{job_id}] Audio extraction failed: {audio_result.stderr[:300]}")
+                        raise Exception("Audio extraction failed")
+
+                    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+                        print(f"[{job_id}] Audio file too small or missing")
+                        raise Exception("Audio file invalid")
 
                     jobs[job_id]['progress'] = 15
+                    print(f"[{job_id}] Audio extracted, size: {os.path.getsize(audio_path)}")
 
                     # Transcribe
                     result = model.transcribe(audio_path, word_timestamps=True, verbose=False)
@@ -909,10 +922,13 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
                     print(f"[{job_id}] Transcribed {len(word_timestamps)} words")
                     jobs[job_id]['progress'] = 20
+                    jobs[job_id]['transcribed_words'] = len(word_timestamps)
                 else:
                     print(f"[{job_id}] Whisper not available, skipping transcription")
             except Exception as trans_err:
-                print(f"[{job_id}] Transcription failed: {trans_err}")
+                print(f"[{job_id}] Transcription error: {trans_err}")
+                import traceback
+                traceback.print_exc()
                 # Continue without subtitles
 
         jobs[job_id]['progress'] = 15
