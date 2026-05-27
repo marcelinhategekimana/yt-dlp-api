@@ -974,31 +974,31 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             filter_parts = []
 
-            # Blue gradient at bottom (50% height for better visibility)
-            filter_parts.append("drawbox=x=0:y=ih*0.5:w=iw:h=ih*0.5:color=0x0047AB@0.6:t=fill")
+            # Blue footer bar at bottom (just 120px for footer area)
+            filter_parts.append("drawbox=x=0:y=ih-120:w=iw:h=120:color=0x0047AB@0.85:t=fill")
 
-            # Top: KIVU MORNING POST text (larger, more visible)
+            # Top: KIVU MORNING POST text - pushed down below logo
             filter_parts.append(
-                f"drawtext=text=KIVU MORNING POST:fontfile={font_escaped}:fontsize=28:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=20"
+                f"drawtext=text=KIVU MORNING POST:fontfile={font_escaped}:fontsize=26:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=130"
             )
 
-            # Title blue box with border (only first N seconds) - LARGER
-            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=110:color=0x0047AB@0.95:t=fill:enable=between(t\\,0\\,{title_duration})")
-            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=110:color=0x60A5FA:t=4:enable=between(t\\,0\\,{title_duration})")
+            # Title blue box with border (only first N seconds)
+            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=100:color=0x0047AB@0.95:t=fill:enable=between(t\\,0\\,{title_duration})")
+            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=100:color=0x60A5FA:t=3:enable=between(t\\,0\\,{title_duration})")
 
-            # Title text (only first N seconds) - LARGER FONT
+            # Title text (only first N seconds)
             filter_parts.append(
-                f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=34:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y={box_y}+40:enable=between(t\\,0\\,{title_duration})"
+                f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=32:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable=between(t\\,0\\,{title_duration})"
             )
 
-            # Bottom center: KIVUMORNINGPOST text - LARGER
+            # Bottom: KIVUMORNINGPOST text - above social icons
             filter_parts.append(
-                f"drawtext=text=KIVUMORNINGPOST:fontfile={font_escaped}:fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-55"
+                f"drawtext=text=KIVUMORNINGPOST:fontfile={font_escaped}:fontsize=20:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-105"
             )
 
             # Bottom right: www.kivumorningpost.com
             filter_parts.append(
-                f"drawtext=text=www.kivumorningpost.com:fontfile={font_escaped}:fontsize=18:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-15:y=h-28"
+                f"drawtext=text=www.kivumorningpost.com:fontfile={font_escaped}:fontsize=14:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-10:y=h-22"
             )
 
             filter_str = ','.join(filter_parts)
@@ -1048,14 +1048,14 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 60
 
-            # Third pass: add butterfly icon (above social bar)
+            # Third pass: add butterfly icon (centered above social icons)
             if os.path.exists(output_path) and has_butterfly:
                 butterfly_output = f'{work_dir}/with_butterfly.mp4'
                 bf_cmd = [
                     'ffmpeg', '-y',
                     '-i', output_path,
                     '-i', butterfly_path,
-                    '-filter_complex', '[1:v]scale=70:-1[bf];[0:v][bf]overlay=(W-w)/2:H-90',
+                    '-filter_complex', '[1:v]scale=50:-1[bf];[0:v][bf]overlay=(W-w)/2:H-80',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     butterfly_output
@@ -1067,10 +1067,10 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 70
 
-            # Fourth pass: add social icons row (bottom)
+            # Fourth pass: add social icons row (in footer area)
             if os.path.exists(output_path) and has_socials:
                 socials_output = f'{work_dir}/with_socials.mp4'
-                # Overlay all 5 social icons in a row at bottom
+                # Overlay all 5 social icons in a row at bottom - smaller and lower
                 social_cmd = [
                     'ffmpeg', '-y',
                     '-i', output_path,
@@ -1080,12 +1080,12 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                     '-i', social_tt,
                     '-i', social_yt,
                     '-filter_complex',
-                    '[1:v]scale=36:-1[fb];[2:v]scale=36:-1[ig];[3:v]scale=36:-1[tw];[4:v]scale=36:-1[tt];[5:v]scale=36:-1[yt];'
-                    '[0:v][fb]overlay=(W/2)-100:H-55[v1];'
-                    '[v1][ig]overlay=(W/2)-50:H-55[v2];'
-                    '[v2][tw]overlay=(W/2):H-55[v3];'
-                    '[v3][tt]overlay=(W/2)+50:H-55[v4];'
-                    '[v4][yt]overlay=(W/2)+100:H-55',
+                    '[1:v]scale=30:-1[fb];[2:v]scale=30:-1[ig];[3:v]scale=30:-1[tw];[4:v]scale=30:-1[tt];[5:v]scale=30:-1[yt];'
+                    '[0:v][fb]overlay=(W/2)-85:H-50[v1];'
+                    '[v1][ig]overlay=(W/2)-42:H-50[v2];'
+                    '[v2][tw]overlay=(W/2):H-50[v3];'
+                    '[v3][tt]overlay=(W/2)+42:H-50[v4];'
+                    '[v4][yt]overlay=(W/2)+85:H-50',
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     socials_output
