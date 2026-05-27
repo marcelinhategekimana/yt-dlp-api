@@ -962,165 +962,98 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         has_butterfly = os.path.exists(butterfly_path)
         has_socials = all(os.path.exists(p) for p in [social_fb, social_ig, social_tw, social_tt, social_yt])
 
-        print(f"[{job_id}] Assets: logo={has_logo}, butterfly={has_butterfly}, socials={has_socials}")
+        # Overlay image path
+        overlay_path = os.path.join(assets_dir, 'OVERLAYREELS.png')
+        has_overlay = os.path.exists(overlay_path)
+        print(f"[{job_id}] Assets: overlay={has_overlay}")
 
-        if show_branding and has_logo:
-            # Build complex filter with image overlays
-            # Font file path (included in assets folder)
+        if show_branding and has_overlay:
+            # Simple approach: overlay PNG + title text
             font = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
-
-            # Escape font path for FFmpeg (replace : and \ with escaped versions)
             font_escaped = font.replace('\\', '/').replace(':', '\\:')
-
-            filter_parts = []
-
-            # Blue gradient overlay at bottom - smooth fade like Photoshop
-            # Multiple layers with increasing opacity for smooth transition
-            filter_parts.append("drawbox=x=0:y=ih*0.68:w=iw:h=ih*0.04:color=0x0047AB@0.05:t=fill")
-            filter_parts.append("drawbox=x=0:y=ih*0.72:w=iw:h=ih*0.04:color=0x0047AB@0.15:t=fill")
-            filter_parts.append("drawbox=x=0:y=ih*0.76:w=iw:h=ih*0.04:color=0x0047AB@0.25:t=fill")
-            filter_parts.append("drawbox=x=0:y=ih*0.80:w=iw:h=ih*0.04:color=0x0047AB@0.40:t=fill")
-            filter_parts.append("drawbox=x=0:y=ih*0.84:w=iw:h=ih*0.04:color=0x0047AB@0.55:t=fill")
-            filter_parts.append("drawbox=x=0:y=ih*0.88:w=iw:h=ih*0.12:color=0x0047AB@0.70:t=fill")
-
-            # Top: KIVU MORNING POST text - pushed down below logo
-            filter_parts.append(
-                f"drawtext=text=KIVU MORNING POST:fontfile={font_escaped}:fontsize=26:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=130"
-            )
-
-            # Title blue box with border (only first N seconds)
-            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=100:color=0x0047AB@0.95:t=fill:enable=between(t\\,0\\,{title_duration})")
-            filter_parts.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=100:color=0x60A5FA:t=3:enable=between(t\\,0\\,{title_duration})")
-
-            # Title text (only first N seconds)
-            filter_parts.append(
-                f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=32:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable=between(t\\,0\\,{title_duration})"
-            )
-
-            # Bottom: KIVUMORNINGPOST text - above social icons
-            filter_parts.append(
-                f"drawtext=text=KIVUMORNINGPOST:fontfile={font_escaped}:fontsize=20:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-105"
-            )
-
-            # Bottom right: www.kivumorningpost.com
-            filter_parts.append(
-                f"drawtext=text=www.kivumorningpost.com:fontfile={font_escaped}:fontsize=14:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-10:y=h-22"
-            )
-
-            filter_str = ','.join(filter_parts)
-
-            # First pass: add text overlays
-            text_output = f'{work_dir}/with_text.mp4'
-            text_cmd = [
-                'ffmpeg', '-y', '-i', scaled_path,
-                '-vf', filter_str,
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                '-c:a', 'copy',
-                text_output
-            ]
-            print(f"[{job_id}] Font path: {font}, exists: {os.path.exists(font)}")
-            print(f"[{job_id}] Filter string: {filter_str[:300]}...")
-            result = subprocess.run(text_cmd, capture_output=True, text=True, timeout=600)
-
-            if result.returncode != 0:
-                print(f"[{job_id}] Text overlay FAILED: {result.stderr[:500]}")
-                text_output = scaled_path
-            else:
-                print(f"[{job_id}] Text overlay SUCCESS, size: {os.path.getsize(text_output) if os.path.exists(text_output) else 0}")
 
             jobs[job_id]['progress'] = 50
 
-            # Second pass: add logo image overlay (top right) - pushed down
-            if os.path.exists(text_output) and has_logo:
-                logo_output = f'{work_dir}/with_logo.mp4'
-                logo_cmd = [
-                    'ffmpeg', '-y',
-                    '-i', text_output,
-                    '-i', logo_path,
-                    '-filter_complex', '[1:v]scale=120:-1[logo];[0:v][logo]overlay=W-w-15:35',
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
-                    logo_output
-                ]
-                result = subprocess.run(logo_cmd, capture_output=True, text=True, timeout=600)
-                if result.returncode == 0 and os.path.exists(logo_output):
-                    print(f"[{job_id}] Logo added")
-                    output_path = logo_output
-                else:
-                    print(f"[{job_id}] Logo overlay error: {result.stderr[:200]}")
-                    output_path = text_output
+            # Step 1: Overlay the branding PNG on video
+            overlay_output = f'{work_dir}/with_overlay.mp4'
+            overlay_cmd = [
+                'ffmpeg', '-y',
+                '-i', scaled_path,
+                '-i', overlay_path,
+                '-filter_complex', '[1:v]scale=720:1280[ovr];[0:v][ovr]overlay=0:0',
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
+                '-c:a', 'copy',
+                overlay_output
+            ]
+            result = subprocess.run(overlay_cmd, capture_output=True, text=True, timeout=600)
+
+            if result.returncode == 0 and os.path.exists(overlay_output):
+                print(f"[{job_id}] Overlay PNG added")
+                output_path = overlay_output
             else:
-                output_path = text_output
+                print(f"[{job_id}] Overlay error: {result.stderr[:300]}")
+                output_path = scaled_path
 
             jobs[job_id]['progress'] = 60
 
-            # Third pass: add butterfly icon (centered above social icons)
-            if os.path.exists(output_path) and has_butterfly:
-                butterfly_output = f'{work_dir}/with_butterfly.mp4'
-                bf_cmd = [
-                    'ffmpeg', '-y',
-                    '-i', output_path,
-                    '-i', butterfly_path,
-                    '-filter_complex', '[1:v]scale=50:-1[bf];[0:v][bf]overlay=(W-w)/2:H-80',
+            # Step 2: Add title text in center (first N seconds) with yellow keywords
+            if safe_title and os.path.exists(output_path):
+                title_output = f'{work_dir}/with_title.mp4'
+
+                # Check if any keywords should be yellow
+                title_words = safe_title.split()
+                highlight_words = [kw.upper() for kw in highlight_keywords] if highlight_keywords else []
+
+                # Build title with mixed colors (white default, yellow for keywords)
+                # For simplicity, if keywords exist, we'll render them separately
+                has_keywords = any(word in highlight_words for word in title_words)
+
+                if has_keywords and len(title_words) <= 6:
+                    # Render each word separately with appropriate color
+                    filter_parts = []
+                    x_offset = 0
+                    word_filters = []
+
+                    # Calculate total width estimate for centering
+                    for i, word in enumerate(title_words):
+                        color = 'yellow' if word in highlight_words else 'white'
+                        # Stack drawtext filters - position words horizontally
+                        word_filters.append(
+                            f"drawtext=text={word}:fontfile={font_escaped}:fontsize=36:fontcolor={color}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
+                        )
+
+                    # Just use single line with all words for now (simpler)
+                    filter_str = f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=36:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
+                else:
+                    # Simple white title
+                    filter_str = f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=36:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
+
+                title_cmd = [
+                    'ffmpeg', '-y', '-i', output_path,
+                    '-vf', filter_str,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
-                    butterfly_output
+                    title_output
                 ]
-                result = subprocess.run(bf_cmd, capture_output=True, text=True, timeout=600)
-                if result.returncode == 0 and os.path.exists(butterfly_output):
-                    print(f"[{job_id}] Butterfly added")
-                    output_path = butterfly_output
+                result = subprocess.run(title_cmd, capture_output=True, text=True, timeout=600)
+
+                if result.returncode == 0 and os.path.exists(title_output):
+                    print(f"[{job_id}] Title added: {safe_title}")
+                    output_path = title_output
+                else:
+                    print(f"[{job_id}] Title error: {result.stderr[:300]}")
 
             jobs[job_id]['progress'] = 70
 
-            # Fourth pass: add social icons row (in footer area)
-            if os.path.exists(output_path) and has_socials:
-                socials_output = f'{work_dir}/with_socials.mp4'
-                # Overlay all 5 social icons in a row at bottom - smaller and lower
-                social_cmd = [
-                    'ffmpeg', '-y',
-                    '-i', output_path,
-                    '-i', social_fb,
-                    '-i', social_ig,
-                    '-i', social_tw,
-                    '-i', social_tt,
-                    '-i', social_yt,
-                    '-filter_complex',
-                    '[1:v]scale=30:-1[fb];[2:v]scale=30:-1[ig];[3:v]scale=30:-1[tw];[4:v]scale=30:-1[tt];[5:v]scale=30:-1[yt];'
-                    '[0:v][fb]overlay=(W/2)-85:H-50[v1];'
-                    '[v1][ig]overlay=(W/2)-42:H-50[v2];'
-                    '[v2][tw]overlay=(W/2):H-50[v3];'
-                    '[v3][tt]overlay=(W/2)+42:H-50[v4];'
-                    '[v4][yt]overlay=(W/2)+85:H-50',
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
-                    socials_output
-                ]
-                result = subprocess.run(social_cmd, capture_output=True, text=True, timeout=600)
-                if result.returncode == 0 and os.path.exists(socials_output):
-                    print(f"[{job_id}] Social icons added")
-                    output_path = socials_output
-                else:
-                    print(f"[{job_id}] Social icons error: {result.stderr[:200]}")
-
         else:
-            # Fallback: simple text branding only (no image assets)
+            # Fallback: just add title text (no overlay image available)
             font = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
             font_escaped = font.replace('\\', '/').replace(':', '\\:')
-            filters = []
-            if show_branding:
-                filters.append(f"drawtext=text=KIVU MORNING POST:fontfile={font_escaped}:fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=20")
-                # Title box and text only for first N seconds
-                filters.append(f"drawbox=x=10:y={box_y}:w=iw-20:h=100:color=blue@0.85:t=fill:enable=between(t\\,0\\,{title_duration})")
-                filters.append(f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=30:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y={box_y}+35:enable=between(t\\,0\\,{title_duration})")
-                filters.append(f"drawtext=text=KIVUMORNINGPOST:fontfile={font_escaped}:fontsize=18:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-55")
-                # Bottom right: website URL
-                filters.append(f"drawtext=text=www.kivumorningpost.com:fontfile={font_escaped}:fontsize=16:fontcolor=white:borderw=2:bordercolor=black:x=w-text_w-15:y=h-28")
 
-            filter_str = ','.join(filters) if filters else None
+            if safe_title and show_branding:
+                filter_str = f"drawtext=text={safe_title}:fontfile={font_escaped}:fontsize=36:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=(h/2)-20:enable=between(t\\,0\\,{title_duration})"
 
-            if filter_str:
-                fallback_output = f'{work_dir}/fallback_branded.mp4'
+                fallback_output = f'{work_dir}/fallback_title.mp4'
                 fallback_cmd = [
                     'ffmpeg', '-y', '-i', scaled_path,
                     '-vf', filter_str,
@@ -1132,7 +1065,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 if result.returncode == 0 and os.path.exists(fallback_output):
                     output_path = fallback_output
                 else:
-                    print(f"[{job_id}] Fallback branding error: {result.stderr[:300]}")
+                    print(f"[{job_id}] Fallback title error: {result.stderr[:300]}")
                     output_path = scaled_path
             else:
                 output_path = scaled_path
