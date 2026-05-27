@@ -902,8 +902,8 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             # Blue gradient at bottom (50% height for better visibility)
             filter_parts.append(f"drawbox=x=0:y=h*0.5:w=w:h=h*0.5:color=0x0047AB@0.6:t=fill")
 
-            # Font file path (DejaVu Sans Bold - installed in Docker)
-            font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            # Font file path (included in assets folder)
+            font = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
 
             # Top: KIVU MORNING POST text (larger, more visible)
             filter_parts.append(
@@ -1023,7 +1023,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         else:
             # Fallback: simple text branding only (no image assets)
-            font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            font = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
             filters = []
             if show_branding:
                 filters.append(f"drawtext=text='KIVU MORNING POST':fontfile='{font}':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=20")
