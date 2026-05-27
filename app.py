@@ -67,6 +67,7 @@ def health():
     assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
     logo_path = os.path.join(assets_dir, 'kmp-logo-v2.png')
 
+    font_path = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
     return jsonify({
         'status': 'ok',
         'service': 'reclip-api',
@@ -76,7 +77,9 @@ def health():
         'assets_dir': assets_dir,
         'assets_exist': os.path.isdir(assets_dir),
         'logo_exists': os.path.exists(logo_path),
-        'logo_path': logo_path
+        'logo_path': logo_path,
+        'font_exists': os.path.exists(font_path),
+        'font_path': font_path
     })
 
 
@@ -940,11 +943,15 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 '-c:a', 'copy',
                 text_output
             ]
+            print(f"[{job_id}] Font path: {font}, exists: {os.path.exists(font)}")
+            print(f"[{job_id}] Filter string: {filter_str[:200]}...")
             result = subprocess.run(text_cmd, capture_output=True, text=True, timeout=600)
 
             if result.returncode != 0:
-                print(f"[{job_id}] Text overlay error: {result.stderr[:300]}")
+                print(f"[{job_id}] Text overlay FAILED: {result.stderr[:500]}")
                 text_output = scaled_path
+            else:
+                print(f"[{job_id}] Text overlay SUCCESS")
 
             jobs[job_id]['progress'] = 50
 
