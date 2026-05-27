@@ -974,8 +974,8 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             filter_parts = []
 
-            # Blue footer bar at bottom (just 120px for footer area)
-            filter_parts.append("drawbox=x=0:y=ih-120:w=iw:h=120:color=0x0047AB@0.85:t=fill")
+            # Blue overlay at bottom 25% of video
+            filter_parts.append("drawbox=x=0:y=ih*0.75:w=iw:h=ih*0.25:color=0x0047AB@0.7:t=fill")
 
             # Top: KIVU MORNING POST text - pushed down below logo
             filter_parts.append(
