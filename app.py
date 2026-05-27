@@ -507,11 +507,21 @@ def get_status(job_id):
         return jsonify({'error': 'Job not found'}), 404
 
     job = jobs[job_id]
-    return jsonify({
+    response = {
         'status': job.get('status'),
         'progress': job.get('progress', 0),
         'error': job.get('error'),
-    })
+    }
+
+    # Include transcription data if available
+    if 'text' in job:
+        response['text'] = job.get('text')
+        response['language'] = job.get('language')
+        response['segments'] = job.get('segments')
+        response['word_timestamps'] = job.get('word_timestamps')
+        response['duration'] = job.get('duration')
+
+    return jsonify(response)
 
 @app.route('/api/file/<job_id>', methods=['GET'])
 def get_file(job_id):
