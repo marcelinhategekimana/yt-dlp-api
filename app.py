@@ -603,6 +603,7 @@ def add_captions():
 
         # Overlay options
         show_branding = data.get('showBranding', True)
+        show_logo = data.get('showLogo', True)  # Control logo visibility
         title_position = data.get('titlePosition', 'center')  # top, center, bottom
         highlight_keywords = data.get('highlightKeywords', [])
 
@@ -628,7 +629,7 @@ def add_captions():
         thread = threading.Thread(
             target=process_video_with_overlays,
             args=(job_id, video_url, caption, word_timestamps, title, title_duration,
-                  show_branding, title_position, highlight_keywords, caption_style, skip_transcription)
+                  show_branding, show_logo, title_position, highlight_keywords, caption_style, skip_transcription)
         )
         thread.start()
 
@@ -851,8 +852,8 @@ def generate_srt_from_timestamps(word_timestamps, title, title_duration):
 
 
 def process_video_with_overlays(job_id, video_url, caption, word_timestamps, title, title_duration,
-                                  show_branding, title_position, highlight_keywords, caption_style='bottom', skip_transcription=False):
-    """Background task to process video: 9:16 ratio + KMP overlays + captions"""
+                                  show_branding, show_logo, title_position, highlight_keywords, caption_style='bottom', skip_transcription=False):
+    """Background task to process video: 9:16 ratio + KMP overlays + logo + captions"""
     import subprocess
     import requests
 
@@ -1020,9 +1021,9 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         # Overlay image path
         overlay_path = os.path.join(assets_dir, 'OVERLAYREELS.png')
         has_overlay = os.path.exists(overlay_path)
-        print(f"[{job_id}] Assets: overlay={has_overlay}")
+        print(f"[{job_id}] Assets: overlay={has_overlay}, logo={has_logo}, show_logo={show_logo}, show_branding={show_branding}")
 
-        if show_branding and has_overlay:
+        if show_branding and has_overlay and show_logo:
             # Simple approach: overlay PNG + title text
             font = os.path.join(assets_dir, 'DejaVuSans-Bold.ttf')
             font_escaped = font.replace('\\', '/').replace(':', '\\:')
