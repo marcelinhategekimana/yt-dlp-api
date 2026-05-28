@@ -1070,7 +1070,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
             jobs[job_id]['progress'] = 60
 
-            # Step 2: Add title text with yellow keywords (no background box)
+            # Step 2: Add blue title box + title text with yellow keywords (matching preview)
             if safe_title and os.path.exists(output_path):
                 title_output = f'{work_dir}/with_title.mp4'
 
@@ -1087,26 +1087,43 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 if highlight_keywords:
                     keywords_upper = [kw.upper() for kw in highlight_keywords]
                 else:
-                    # Auto-detect: prepositions, articles, and connector words that should be yellow
+                    # Auto-detect: prepositions, articles, connector words, and numbers for yellow
                     auto_keywords = {'DE', 'LA', 'LE', 'LES', 'DU', 'DES', 'EN', 'AU', 'AUX', 'A', 'ET', 'OU', 'UN', 'UNE', 'EST', 'SONT', 'PAR', 'POUR', 'SUR', 'DANS', 'AVEC'}
                     keywords_upper = []
                     for word in title_words:
                         if any(c.isdigit() for c in word) or word in auto_keywords:
                             keywords_upper.append(word)
 
-                print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}")
+                print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}, Position: {title_position}")
 
                 # Build ASS subtitle for title with yellow keywords
                 ass_title_parts = []
                 for word in title_words:
                     if word in keywords_upper:
-                        # Yellow color in ASS format (BGR): 00FFFF = yellow
-                        ass_title_parts.append(f"{{\\c&H00FFFF&}}{word}{{\\c&HFFFFFF&}}")
+                        # Yellow/Gold color in ASS format (BGR): 00D7FF = #FFD700 gold
+                        ass_title_parts.append(f"{{\\c&H00D7FF&}}{word}{{\\c&HFFFFFF&}}")
                     else:
                         ass_title_parts.append(word)
                 ass_title_text = ' '.join(ass_title_parts)
 
-                # Create ASS file for title - centered in middle of screen
+                # Calculate title Y position to match preview (720x1280 canvas)
+                # Preview positions: top=100, center=540 (middle-100), bottom=1050
+                if title_position == 'top':
+                    title_y = 120
+                elif title_position == 'bottom':
+                    title_y = 1000
+                else:  # center
+                    title_y = 540
+
+                # Box dimensions: full width with padding, height ~80px
+                box_x = 10
+                box_w = 700  # 720 - 20 padding
+                box_h = 80
+                box_y = title_y - 10  # Box starts slightly above text
+
+                # Create ASS file for title with blue box background
+                # BorderStyle=4 gives opaque box, BackColour is box color
+                # Blue box: #0047AB = RGB(0,71,171) = BGR &HAB4700
                 title_ass_path = f'{work_dir}/title.ass'
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
@@ -1116,11 +1133,11 @@ PlayResY: 1280
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Title,Arial Black,32,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,2,5,0,0,0,1
+Style: TitleBox,Arial Black,28,&H00FFFFFF,&H000000FF,&HFFFA6050,&HE0AB4700,-1,0,0,0,100,100,0,0,4,2,0,5,10,10,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,Title,,0,0,0,,{{\\pos(360,640)}}{ass_title_text}
+Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleBox,,0,0,0,,{{\\pos(360,{title_y})}}{ass_title_text}
 """
                 with open(title_ass_path, 'w', encoding='utf-8') as f:
                     f.write(title_ass_content)
@@ -1137,7 +1154,7 @@ Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,Title,,0,0,0,,{{\\pos(360,640)}
                 result = subprocess.run(title_cmd, capture_output=True, text=True, timeout=600)
 
                 if result.returncode == 0 and os.path.exists(title_output):
-                    print(f"[{job_id}] Title added: {clean_title}")
+                    print(f"[{job_id}] Title with blue box added: {clean_title}")
                     output_path = title_output
                 else:
                     print(f"[{job_id}] Title error: {result.stderr[:300]}")
