@@ -1133,7 +1133,7 @@ PlayResY: 1280
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TitleBox,Arial Black,28,&H00FFFFFF,&H000000FF,&HFFFA6050,&HE0AB4700,-1,0,0,0,100,100,0,0,4,2,0,5,10,10,0,1
+Style: TitleBox,Arial Black,28,&H00FFFFFF,&H000000FF,&H00FAA560,&H00AB4700,-1,0,0,0,100,100,0,0,4,2,0,5,10,10,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
