@@ -1016,7 +1016,13 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         output_path = f'{work_dir}/output.mp4'
 
         # Escape title for FFmpeg
-        safe_title = ''.join(c for c in title if c.isalnum() or c in ' -').strip()[:50].upper()
+        # Keep the FULL title — no 50-char truncation (that was cutting titles
+        # off mid-word, e.g. "... VILLE M"). This alphanumeric-only version is
+        # drawtext-safe and only used by the fallback path below; the main ASS
+        # path derives its own richer clean_title from the original `title`.
+        safe_title = ' '.join(
+            ''.join(c for c in title if c.isalnum() or c in ' -').split()
+        ).strip().upper()
         if not safe_title:
             safe_title = "ACTUALITES"
 
@@ -1076,7 +1082,10 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
                 # Remove emojis from title - keep only alphanumeric, spaces, and basic punctuation
                 import re
-                clean_title = re.sub(r'[^\w\s\-\'\.,!?]', '', safe_title, flags=re.UNICODE)
+                # Derive from the ORIGINAL title (not the stripped safe_title)
+                # so # and apostrophes survive, and keep the full length — only
+                # emojis/control chars are removed.
+                clean_title = re.sub(r'[^\w\s\-\'\.,!?#«»:]', '', title, flags=re.UNICODE)
                 clean_title = ' '.join(clean_title.split()).strip().upper()
 
                 if not clean_title:
@@ -1097,14 +1106,25 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}, Position: {title_position}")
 
                 # Build ASS subtitle for title with yellow keywords
+                # Wrap across multiple lines (~22 chars/line) so the WHOLE title
+                # fits in the box instead of running off-frame / being cut off.
+                MAX_CHARS_PER_LINE = 22
                 ass_title_parts = []
+                line_len = 0
                 for word in title_words:
+                    if line_len > 0 and line_len + 1 + len(word) > MAX_CHARS_PER_LINE:
+                        ass_title_parts.append('\\N')  # ASS hard line break
+                        line_len = 0
+                    elif line_len > 0:
+                        ass_title_parts.append(' ')
+                        line_len += 1
                     if word in keywords_upper:
                         # Yellow/Gold color in ASS format (BGR): 00D7FF = #FFD700 gold
                         ass_title_parts.append(f"{{\\c&H00D7FF&}}{word}{{\\c&HFFFFFF&}}")
                     else:
                         ass_title_parts.append(word)
-                ass_title_text = ' '.join(ass_title_parts)
+                    line_len += len(word)
+                ass_title_text = ''.join(ass_title_parts)
 
                 # Calculate title Y position to match preview (720x1280 canvas)
                 # Preview positions: top=100, center=540 (middle-100), bottom=1050
@@ -1128,6 +1148,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
 ScriptType: v4.00+
+WrapStyle: 2
 PlayResX: 720
 PlayResY: 1280
 
