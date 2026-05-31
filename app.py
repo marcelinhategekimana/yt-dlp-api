@@ -1115,15 +1115,27 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
                 print(f"[{job_id}] Title: {clean_title}, Keywords: {keywords_upper}, Position: {title_position}")
 
-                # Build ASS subtitle for title with yellow keywords
-                # Wrap across multiple lines (~22 chars/line) so the WHOLE title
-                # fits in the box instead of running off-frame / being cut off.
-                MAX_CHARS_PER_LINE = 22
+                # Full-width blue title box (720x1280 canvas), left-aligned text.
+                FONT_SIZE = 30
+                LINE_H = 46           # vertical space per wrapped line
+                PAD_X = 22            # text inset from the box's left edge
+                PAD_Y = 16            # box padding above/below the text block
+                box_x = 8
+                box_w = 720 - 2 * box_x  # near-full width, small side margins
+
+                # Wrap to FILL the box width: only break to a new line when the
+                # next whole word won't fit (never split a word). The chars that
+                # fit per line are derived from the box's inner width and the
+                # title font (uppercase glyphs ≈ 0.62 * fontsize wide), so the
+                # text uses the whole box instead of leaving the right side empty.
+                inner_w = box_w - 2 * PAD_X
+                MAX_CHARS_PER_LINE = max(10, int(inner_w / (FONT_SIZE * 0.62)))
+
                 ass_title_parts = []
                 line_len = 0
                 for word in title_words:
                     if line_len > 0 and line_len + 1 + len(word) > MAX_CHARS_PER_LINE:
-                        ass_title_parts.append('\\N')  # ASS hard line break
+                        ass_title_parts.append('\\N')  # break on whole words only
                         line_len = 0
                     elif line_len > 0:
                         ass_title_parts.append(' ')
@@ -1136,17 +1148,6 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                     line_len += len(word)
                 ass_title_text = ''.join(ass_title_parts)
 
-                # Match the in-app preview: a LEFT-aligned title inside a
-                # full-width blue box with a light-blue border. The box is drawn
-                # full-width with ffmpeg drawbox (ASS BorderStyle=4 only hugs
-                # each line, giving a ragged right edge), and the text is drawn
-                # left-aligned on top via ASS.
-                FONT_SIZE = 30
-                LINE_H = 46           # vertical space per wrapped line
-                PAD_X = 22            # text inset from the box's left edge
-                PAD_Y = 16            # box padding above/below the text block
-                box_x = 8
-                box_w = 720 - 2 * box_x  # near-full width, small side margins
                 num_lines = ass_title_text.count('\\N') + 1
                 box_h = num_lines * LINE_H + 2 * PAD_Y
 
