@@ -1126,24 +1126,35 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                     line_len += len(word)
                 ass_title_text = ''.join(ass_title_parts)
 
-                # Calculate title Y position to match preview (720x1280 canvas)
-                # Preview positions: top=100, center=540 (middle-100), bottom=1050
+                # Match the in-app preview: a LEFT-aligned title inside a
+                # full-width blue box with a light-blue border. The box is drawn
+                # full-width with ffmpeg drawbox (ASS BorderStyle=4 only hugs
+                # each line, giving a ragged right edge), and the text is drawn
+                # left-aligned on top via ASS.
+                FONT_SIZE = 30
+                LINE_H = 46           # vertical space per wrapped line
+                PAD_X = 22            # text inset from the box's left edge
+                PAD_Y = 16            # box padding above/below the text block
+                box_x = 8
+                box_w = 720 - 2 * box_x  # near-full width, small side margins
+                num_lines = ass_title_text.count('\\N') + 1
+                box_h = num_lines * LINE_H + 2 * PAD_Y
+
+                # Vertical placement of the box (720x1280 canvas) per position.
                 if title_position == 'top':
-                    title_y = 120
+                    box_y = 70
                 elif title_position == 'bottom':
-                    title_y = 1000
+                    box_y = 1040 - box_h  # sit above the bottom branding
                 else:  # center
-                    title_y = 540
+                    box_y = (1280 - box_h) // 2
 
-                # Box dimensions: full width with padding, height ~80px
-                box_x = 10
-                box_w = 700  # 720 - 20 padding
-                box_h = 80
-                box_y = title_y - 10  # Box starts slightly above text
+                text_x = box_x + PAD_X
+                text_mid_y = box_y + box_h // 2  # alignment 4 anchors at middle-left
 
-                # Create ASS file for title with blue box background
-                # BorderStyle=4 gives opaque box, BackColour is box color
-                # Blue box: #0047AB = RGB(0,71,171) = BGR &HAB4700
+                # ASS: left-aligned text only (no box). BorderStyle=1 gives a
+                # black outline + shadow like the preview's text shadow.
+                # Alignment 4 = middle-left, so \pos anchors the text block's
+                # left-middle and it stays vertically centred in the box.
                 title_ass_path = f'{work_dir}/title.ass'
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
@@ -1154,20 +1165,32 @@ PlayResY: 1280
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: TitleBox,Arial Black,28,&H00FFFFFF,&H000000FF,&H00FAA560,&H00AB4700,-1,0,0,0,100,100,0,0,4,2,0,5,10,10,0,1
+Style: TitleText,Arial Black,{FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,2,4,10,10,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleBox,,0,0,0,,{{\\pos(360,{title_y})}}{ass_title_text}
+Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text_x},{text_mid_y})}}{ass_title_text}
 """
                 with open(title_ass_path, 'w', encoding='utf-8') as f:
                     f.write(title_ass_content)
 
                 title_ass_escaped = title_ass_path.replace(':', '\\:')
 
+                # Full-width blue box (#0047AB) + light-blue border (#60A5FA),
+                # shown only while the title is on screen, then the text on top.
+                box_fill = (
+                    f"drawbox=x={box_x}:y={box_y}:w={box_w}:h={box_h}"
+                    f":color=0x0047AB:t=fill:enable=between(t\\,0\\,{title_duration})"
+                )
+                box_border = (
+                    f"drawbox=x={box_x}:y={box_y}:w={box_w}:h={box_h}"
+                    f":color=0x60A5FA:t=4:enable=between(t\\,0\\,{title_duration})"
+                )
+                title_vf = f"{box_fill},{box_border},ass={title_ass_escaped}"
+
                 title_cmd = [
                     'ffmpeg', '-y', '-i', output_path,
-                    '-vf', f"ass={title_ass_escaped}",
+                    '-vf', title_vf,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
                     '-c:a', 'copy',
                     title_output
