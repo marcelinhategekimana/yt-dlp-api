@@ -973,6 +973,14 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         print(f"[{job_id}] Input video: {input_width}x{input_height}, duration: {video_duration}s")
 
+        # Facebook/Instagram Reels are capped at ~90s. If the source video is
+        # longer than 90s, trim the Reel to 60s so the upload isn't rejected
+        # ("video meets size and duration requirements" error). Videos <= 90s
+        # are kept at full length.
+        trim_args = ['-t', '60'] if video_duration > 90 else []
+        if trim_args:
+            print(f"[{job_id}] Source is {video_duration:.0f}s (>90s) — trimming Reel to 60s")
+
         jobs[job_id]['progress'] = 20
 
         # Step 1: Convert to FULL 9:16 (720x1280) - CROP to fill, no black bars
@@ -991,6 +999,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26',
             '-c:a', 'aac', '-b:a', '128k',
             '-movflags', '+faststart',
+            *trim_args,
             scaled_path
         ]
         result = subprocess.run(scale_cmd, capture_output=True, text=True, timeout=600)
@@ -1001,6 +1010,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 '-vf', f'scale={target_w}:{target_h}',
                 '-c:v', 'libx264', '-preset', 'ultrafast',
                 '-c:a', 'aac',
+                *trim_args,
                 scaled_path
             ]
             subprocess.run(scale_cmd, capture_output=True, text=True, timeout=600)
