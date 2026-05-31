@@ -973,13 +973,11 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         print(f"[{job_id}] Input video: {input_width}x{input_height}, duration: {video_duration}s")
 
-        # Facebook/Instagram Reels are capped at ~90s. If the source video is
-        # longer than 90s, trim the Reel to 60s so the upload isn't rejected
-        # ("video meets size and duration requirements" error). Videos <= 90s
-        # are kept at full length.
-        trim_args = ['-t', '60'] if video_duration > 90 else []
-        if trim_args:
-            print(f"[{job_id}] Source is {video_duration:.0f}s (>90s) — trimming Reel to 60s")
+        # No artificial duration cap — keep the full video length. Each
+        # platform applies its own Reel limits at upload time (e.g. Facebook
+        # Reels ~90s, Instagram Reels ~3min); over-limit uploads are handled
+        # gracefully by the publisher (stored + notified, not truncated here).
+        trim_args = []
 
         jobs[job_id]['progress'] = 20
 
