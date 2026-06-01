@@ -1070,7 +1070,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 '-i', overlay_path,
                 '-filter_complex', '[1:v]scale=720:1280[ovr];[0:v][ovr]overlay=0:0',
                 '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                '-c:a', 'copy',
+                '-c:a', 'aac', '-b:a', '128k',
                 overlay_output
             ]
             result = subprocess.run(overlay_cmd, capture_output=True, text=True, timeout=600)
@@ -1201,7 +1201,7 @@ Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text
                     'ffmpeg', '-y', '-i', output_path,
                     '-vf', title_vf,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
                     title_output
                 ]
                 result = subprocess.run(title_cmd, capture_output=True, text=True, timeout=600)
@@ -1227,7 +1227,7 @@ Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text
                     'ffmpeg', '-y', '-i', scaled_path,
                     '-vf', filter_str,
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
                     fallback_output
                 ]
                 result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=600)
@@ -1260,7 +1260,7 @@ Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text
                     'ffmpeg', '-y', '-i', output_path,
                     '-vf', f"ass={sub_escaped}",
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
                     final_output
                 ]
             else:
@@ -1276,7 +1276,7 @@ Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text
                     'ffmpeg', '-y', '-i', output_path,
                     '-vf', f"subtitles={sub_escaped}:force_style='FontName=Arial,FontSize=20,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=150,Alignment=2'",
                     '-c:v', 'libx264', '-preset', 'fast', '-crf', '24',
-                    '-c:a', 'copy',
+                    '-c:a', 'aac', '-b:a', '128k',
                     final_output
                 ]
 
