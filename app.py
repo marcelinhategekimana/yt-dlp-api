@@ -1040,7 +1040,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
         if title_position == 'top':
             box_y = 100
         elif title_position == 'bottom':
-            box_y = 1050
+            box_y = 950  # Moved up to avoid Facebook UI
         else:  # center
             box_y = 550
 
@@ -1153,7 +1153,7 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 if title_position == 'top':
                     box_y = 70
                 elif title_position == 'bottom':
-                    box_y = 1040 - box_h  # sit above the bottom branding
+                    box_y = 940 - box_h  # Moved up to avoid Facebook UI
                 else:  # center
                     box_y = (1280 - box_h) // 2
 
