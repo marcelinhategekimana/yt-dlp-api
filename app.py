@@ -71,7 +71,7 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-CODE_VERSION = "2026-06-04-v5"  # Fixed BOTH box_y assignments for title position
+CODE_VERSION = "2026-06-04-v6"  # Fixed caption_style default to center
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -629,7 +629,7 @@ def add_captions():
         highlight_keywords = data.get('highlightKeywords', [])
 
         # Caption style options: 'bottom' (default), 'top', 'center'
-        caption_style = data.get('captionStyle', 'bottom')
+        caption_style = data.get('captionStyle', 'center')  # Default to center (above bottom title)
 
         # Skip transcription if explicitly requested
         # Only auto-skip if skipTranscription is not explicitly set to false
@@ -1547,7 +1547,7 @@ def clip_video():
         min_duration = data.get('minDuration', 30)
         max_duration = data.get('maxDuration', 60)
         add_captions = data.get('addCaptions', True)
-        caption_style = data.get('captionStyle', 'bottom')
+        caption_style = data.get('captionStyle', 'center')  # Default to center (above bottom title)
         title = data.get('title', '')
 
         if not video_url:
