@@ -71,7 +71,7 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-CODE_VERSION = "2026-06-04-v4"  # Fixed title duration + position defaults
+CODE_VERSION = "2026-06-04-v5"  # Fixed BOTH box_y assignments for title position
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -1055,11 +1055,12 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         print(f"[{job_id}] Title: {safe_title}")
 
-        # Title box Y position
+        # Title box Y position (720x1280 canvas)
+        # Facebook/Instagram UI covers bottom ~200px, so 'bottom' needs clearance
         if title_position == 'top':
             box_y = 100
         elif title_position == 'bottom':
-            box_y = 1050
+            box_y = 850  # Higher up to avoid Facebook/IG bottom UI overlay
         else:  # center
             box_y = 550
 
