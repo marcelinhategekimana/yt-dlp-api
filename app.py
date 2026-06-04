@@ -71,7 +71,7 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-CODE_VERSION = "2026-06-04-v3"  # Title moved higher to avoid Facebook UI
+CODE_VERSION = "2026-06-04-v4"  # Fixed title duration + position defaults
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -620,7 +620,7 @@ def add_captions():
         caption = data.get('caption', '')
         word_timestamps = data.get('wordTimestamps', [])
         title = data.get('title', '')
-        title_duration = data.get('titleDuration', 5)
+        title_duration = data.get('titleDuration', 9999)  # Default to "forever" if not specified
 
         # Overlay options
         show_branding = data.get('showBranding', True)
@@ -889,6 +889,10 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
     """Background task to process video: 9:16 ratio + KMP overlays + logo + captions"""
     import subprocess
     import requests
+
+    # Log parameters for debugging
+    print(f"[{job_id}] PARAMS: title_position={title_position}, title_duration={title_duration}, caption_style={caption_style}")
+    print(f"[{job_id}] Title: {title[:50] if title else 'None'}...")
 
     try:
         os.makedirs('/tmp/captions', exist_ok=True)
@@ -1181,6 +1185,13 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 # Alignment 4 = middle-left, so \pos anchors the text block's
                 # left-middle and it stays vertically centred in the box.
                 title_ass_path = f'{work_dir}/title.ass'
+
+                # Convert title_duration to ASS time format (H:MM:SS.cc)
+                title_h = int(title_duration // 3600)
+                title_m = int((title_duration % 3600) // 60)
+                title_s = int(title_duration % 60)
+                title_end_time = f"{title_h}:{title_m:02d}:{title_s:02d}.00"
+
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
 ScriptType: v4.00+
@@ -1194,7 +1205,7 @@ Style: TitleText,Arial Black,{FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H0000
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text_x},{text_mid_y})}}{ass_title_text}
+Dialogue: 0,0:00:00.00,{title_end_time},TitleText,,0,0,0,,{{\\pos({text_x},{text_mid_y})}}{ass_title_text}
 """
                 with open(title_ass_path, 'w', encoding='utf-8') as f:
                     f.write(title_ass_content)
