@@ -71,8 +71,6 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-CODE_VERSION = "2026-06-04-v6"  # Fixed caption_style default to center
-
 @app.route('/health', methods=['GET'])
 def health():
     # Don't load model on health check to avoid OOM on free tier
@@ -91,7 +89,6 @@ def health():
     return jsonify({
         'status': 'ok',
         'service': 'reclip-api',
-        'version': CODE_VERSION,
         'whisper': whisper_installed,
         'model': os.getenv('WHISPER_MODEL', 'tiny'),
         'gpu': os.getenv('GPU_ENABLED', 'false'),
@@ -620,16 +617,16 @@ def add_captions():
         caption = data.get('caption', '')
         word_timestamps = data.get('wordTimestamps', [])
         title = data.get('title', '')
-        title_duration = data.get('titleDuration', 9999)  # Default to "forever" if not specified
+        title_duration = data.get('titleDuration', 5)
 
         # Overlay options
         show_branding = data.get('showBranding', True)
         show_logo = data.get('showLogo', True)  # Control logo visibility
-        title_position = data.get('titlePosition', 'bottom')  # top, center, bottom - default to bottom
+        title_position = data.get('titlePosition', 'center')  # top, center, bottom
         highlight_keywords = data.get('highlightKeywords', [])
 
         # Caption style options: 'bottom' (default), 'top', 'center'
-        caption_style = data.get('captionStyle', 'center')  # Default to center (above bottom title)
+        caption_style = data.get('captionStyle', 'bottom')
 
         # Skip transcription if explicitly requested
         # Only auto-skip if skipTranscription is not explicitly set to false
@@ -737,8 +734,6 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,38,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,8,15,15,120,1
 Style: Yellow,Arial Black,38,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,8,15,15,120,1
-Style: Center,Arial Black,38,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,5,15,15,280,1
-Style: CenterYellow,Arial Black,38,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,5,15,15,280,1
 Style: Bottom,Arial Black,34,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,15,15,200,1
 Style: BottomYellow,Arial Black,34,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,15,15,200,1
 
@@ -750,18 +745,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return ass_content
 
     # Choose base style based on position preference
-    # 'bottom' = captions at bottom (above footer)
-    # 'center' = captions in middle of screen (above bottom title)
-    # 'top'/default = captions at top
-    if style == 'bottom':
-        base_style = 'Bottom'
-        highlight_style = 'BottomYellow'
-    elif style == 'center':
-        base_style = 'Center'
-        highlight_style = 'CenterYellow'
-    else:
-        base_style = 'Default'
-        highlight_style = 'Yellow'
+    base_style = 'Bottom' if style == 'bottom' else 'Default'
+    highlight_style = 'BottomYellow' if style == 'bottom' else 'Yellow'
 
     # Format timestamp for ASS (H:MM:SS.cc)
     def format_time(t):
@@ -889,10 +874,6 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
     """Background task to process video: 9:16 ratio + KMP overlays + logo + captions"""
     import subprocess
     import requests
-
-    # Log parameters for debugging
-    print(f"[{job_id}] PARAMS: title_position={title_position}, title_duration={title_duration}, caption_style={caption_style}")
-    print(f"[{job_id}] Title: {title[:50] if title else 'None'}...")
 
     try:
         os.makedirs('/tmp/captions', exist_ok=True)
@@ -1055,12 +1036,11 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
 
         print(f"[{job_id}] Title: {safe_title}")
 
-        # Title box Y position (720x1280 canvas)
-        # Facebook/Instagram UI covers bottom ~200px, so 'bottom' needs clearance
+        # Title box Y position
         if title_position == 'top':
             box_y = 100
         elif title_position == 'bottom':
-            box_y = 850  # Higher up to avoid Facebook/IG bottom UI overlay
+            box_y = 1050
         else:  # center
             box_y = 550
 
@@ -1170,11 +1150,10 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 box_h = num_lines * LINE_H + 2 * PAD_Y
 
                 # Vertical placement of the box (720x1280 canvas) per position.
-                # Facebook/Instagram UI covers bottom ~200px, so 'bottom' needs clearance
                 if title_position == 'top':
                     box_y = 70
                 elif title_position == 'bottom':
-                    box_y = 920 - box_h  # higher up to avoid Facebook/IG bottom UI overlay
+                    box_y = 1040 - box_h  # sit above the bottom branding
                 else:  # center
                     box_y = (1280 - box_h) // 2
 
@@ -1186,13 +1165,6 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 # Alignment 4 = middle-left, so \pos anchors the text block's
                 # left-middle and it stays vertically centred in the box.
                 title_ass_path = f'{work_dir}/title.ass'
-
-                # Convert title_duration to ASS time format (H:MM:SS.cc)
-                title_h = int(title_duration // 3600)
-                title_m = int((title_duration % 3600) // 60)
-                title_s = int(title_duration % 60)
-                title_end_time = f"{title_h}:{title_m:02d}:{title_s:02d}.00"
-
                 title_ass_content = f"""[Script Info]
 Title: KMP Title
 ScriptType: v4.00+
@@ -1206,7 +1178,7 @@ Style: TitleText,Arial Black,{FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H0000
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,{title_end_time},TitleText,,0,0,0,,{{\\pos({text_x},{text_mid_y})}}{ass_title_text}
+Dialogue: 0,0:00:00.00,0:00:0{title_duration}.00,TitleText,,0,0,0,,{{\\pos({text_x},{text_mid_y})}}{ass_title_text}
 """
                 with open(title_ass_path, 'w', encoding='utf-8') as f:
                     f.write(title_ass_content)
@@ -1547,7 +1519,7 @@ def clip_video():
         min_duration = data.get('minDuration', 30)
         max_duration = data.get('maxDuration', 60)
         add_captions = data.get('addCaptions', True)
-        caption_style = data.get('captionStyle', 'center')  # Default to center (above bottom title)
+        caption_style = data.get('captionStyle', 'bottom')
         title = data.get('title', '')
 
         if not video_url:
