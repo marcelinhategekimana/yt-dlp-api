@@ -71,6 +71,8 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
+CODE_VERSION = "2026-06-04-v2"  # Increment to verify Railway deployment
+
 @app.route('/health', methods=['GET'])
 def health():
     # Don't load model on health check to avoid OOM on free tier
@@ -89,6 +91,7 @@ def health():
     return jsonify({
         'status': 'ok',
         'service': 'reclip-api',
+        'version': CODE_VERSION,
         'whisper': whisper_installed,
         'model': os.getenv('WHISPER_MODEL', 'tiny'),
         'gpu': os.getenv('GPU_ENABLED', 'false'),
@@ -622,7 +625,7 @@ def add_captions():
         # Overlay options
         show_branding = data.get('showBranding', True)
         show_logo = data.get('showLogo', True)  # Control logo visibility
-        title_position = data.get('titlePosition', 'center')  # top, center, bottom
+        title_position = data.get('titlePosition', 'bottom')  # top, center, bottom - default to bottom
         highlight_keywords = data.get('highlightKeywords', [])
 
         # Caption style options: 'bottom' (default), 'top', 'center'
