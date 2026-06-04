@@ -71,7 +71,7 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-CODE_VERSION = "2026-06-04-v2"  # Increment to verify Railway deployment
+CODE_VERSION = "2026-06-04-v3"  # Title moved higher to avoid Facebook UI
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -1165,10 +1165,11 @@ def process_video_with_overlays(job_id, video_url, caption, word_timestamps, tit
                 box_h = num_lines * LINE_H + 2 * PAD_Y
 
                 # Vertical placement of the box (720x1280 canvas) per position.
+                # Facebook/Instagram UI covers bottom ~200px, so 'bottom' needs clearance
                 if title_position == 'top':
                     box_y = 70
                 elif title_position == 'bottom':
-                    box_y = 1040 - box_h  # sit above the bottom branding
+                    box_y = 920 - box_h  # higher up to avoid Facebook/IG bottom UI overlay
                 else:  # center
                     box_y = (1280 - box_h) // 2
 
