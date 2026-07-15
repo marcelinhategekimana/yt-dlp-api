@@ -543,6 +543,10 @@ def get_status(job_id):
     if 'transcribed_words' in job:
         response['transcribed_words'] = job.get('transcribed_words')
 
+    # Include output URL from convert jobs
+    if 'outputUrl' in job:
+        response['outputUrl'] = job.get('outputUrl')
+
     return jsonify(response)
 
 @app.route('/api/file/<job_id>', methods=['GET'])
@@ -1490,6 +1494,103 @@ def crop_video_task(job_id, video_url, ratio, mode, quality):
 
     except Exception as e:
         print(f"[{job_id}] Crop error: {str(e)}")
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
+@app.route('/api/convert', methods=['POST'])
+def convert_video():
+    """Convert a video (WebM etc.) to MP4 (H.264/AAC) for Facebook/Instagram"""
+    try:
+        data = request.get_json()
+        input_url = data.get('inputUrl') or data.get('webmUrl') or data.get('videoUrl') or data.get('url')
+        options = data.get('options') or {}
+
+        if not input_url:
+            return jsonify({'error': 'inputUrl required'}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'queued', 'progress': 0}
+
+        # Absolute base URL for the output link (Railway sits behind a proxy,
+        # so build it from the request host with https)
+        base_url = f"https://{request.host}"
+
+        thread = threading.Thread(
+            target=convert_video_task,
+            args=(job_id, input_url, options, base_url)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'jobId': job_id, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def convert_video_task(job_id, input_url, options, base_url):
+    """Background task to transcode a video to MP4"""
+    import subprocess
+    import requests as req
+
+    try:
+        jobs[job_id]['status'] = 'downloading'
+        jobs[job_id]['progress'] = 10
+
+        work_dir = f'/tmp/downloads/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+        input_path = f'{work_dir}/input'
+        # Output goes directly in /tmp/downloads so the cleanup thread removes it
+        output_path = f'/tmp/downloads/convert_{job_id}.mp4'
+
+        response = req.get(input_url, stream=True, timeout=120)
+        response.raise_for_status()
+        with open(input_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        jobs[job_id]['status'] = 'processing'
+        jobs[job_id]['progress'] = 40
+
+        crf = str(options.get('crf', 23))
+        preset = options.get('preset', 'fast')
+        audio_bitrate = options.get('audioBitrate', '192k')
+
+        # yuv420p + even dimensions are required for H.264 players (and Facebook)
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+            '-c:v', 'libx264', '-crf', crf, '-preset', preset,
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', audio_bitrate,
+            '-movflags', '+faststart',
+            output_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            jobs[job_id] = {
+                'status': 'done',
+                'progress': 100,
+                'filepath': output_path,
+                'filename': f'convert_{job_id}.mp4',
+                'outputUrl': f'{base_url}/api/file/{job_id}',
+            }
+            print(f"[{job_id}] Convert complete!")
+        else:
+            print(f"[{job_id}] FFmpeg error: {result.stderr[:500]}")
+            jobs[job_id] = {'status': 'error', 'error': 'FFmpeg conversion failed'}
+
+        # Cleanup input
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        try:
+            os.rmdir(work_dir)
+        except OSError:
+            pass
+
+    except Exception as e:
+        print(f"[{job_id}] Convert error: {str(e)}")
         jobs[job_id] = {'status': 'error', 'error': str(e)}
 
 
