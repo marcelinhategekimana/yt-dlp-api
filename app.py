@@ -543,9 +543,11 @@ def get_status(job_id):
     if 'transcribed_words' in job:
         response['transcribed_words'] = job.get('transcribed_words')
 
-    # Include output URL from convert jobs
+    # Include output URL from convert/concat jobs
     if 'outputUrl' in job:
         response['outputUrl'] = job.get('outputUrl')
+    if 'durationSeconds' in job:
+        response['durationSeconds'] = job.get('durationSeconds')
 
     return jsonify(response)
 
@@ -1591,6 +1593,149 @@ def convert_video_task(job_id, input_url, options, base_url):
 
     except Exception as e:
         print(f"[{job_id}] Convert error: {str(e)}")
+        jobs[job_id] = {'status': 'error', 'error': str(e)}
+
+
+@app.route('/api/concat', methods=['POST'])
+def concat_videos():
+    """Stitch multiple clips into one MP4 (normalized to uniform specs)"""
+    try:
+        data = request.get_json()
+        clip_urls = data.get('clipUrls') or data.get('videoUrls') or []
+        width = int(data.get('width', 1080))
+        height = int(data.get('height', 1920))
+        fps = int(data.get('fps', 30))
+
+        if not clip_urls or not isinstance(clip_urls, list):
+            return jsonify({'error': 'clipUrls (array) required'}), 400
+
+        job_id = str(uuid.uuid4())[:8]
+        jobs[job_id] = {'status': 'queued', 'progress': 0}
+
+        base_url = f"https://{request.host}"
+
+        thread = threading.Thread(
+            target=concat_videos_task,
+            args=(job_id, clip_urls, width, height, fps, base_url)
+        )
+        thread.start()
+
+        return jsonify({'success': True, 'jobId': job_id, 'job_id': job_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+def concat_videos_task(job_id, clip_urls, width, height, fps, base_url):
+    """Background task: normalize each clip to the same specs, then concat"""
+    import subprocess
+    import requests as req
+
+    try:
+        work_dir = f'/tmp/downloads/{job_id}'
+        os.makedirs(work_dir, exist_ok=True)
+        output_path = f'/tmp/downloads/concat_{job_id}.mp4'
+
+        def has_audio(path):
+            r = subprocess.run(
+                ['ffprobe', '-v', 'error', '-select_streams', 'a',
+                 '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path],
+                capture_output=True, text=True
+            )
+            return bool(r.stdout.strip())
+
+        normalized = []
+        total = len(clip_urls)
+        for idx, url in enumerate(clip_urls):
+            jobs[job_id]['status'] = 'processing'
+            jobs[job_id]['progress'] = int((idx / max(1, total)) * 80)
+
+            raw = f'{work_dir}/raw_{idx}'
+            norm = f'{work_dir}/norm_{idx}.mp4'
+
+            response = req.get(url, stream=True, timeout=120)
+            response.raise_for_status()
+            with open(raw, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            # Normalize to identical video/audio specs so the concat demuxer
+            # can stream-copy. Clips without an audio track get silence, since
+            # concat with mixed audio/no-audio produces a broken file.
+            vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                  f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}")
+            if has_audio(raw):
+                cmd = ['ffmpeg', '-y', '-i', raw]
+                maps = ['-map', '0:v:0', '-map', '0:a:0']
+            else:
+                cmd = ['ffmpeg', '-y', '-i', raw, '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']
+                maps = ['-map', '0:v:0', '-map', '1:a:0', '-shortest']
+            cmd += maps + [
+                '-vf', vf,
+                '-c:v', 'libx264', '-crf', '23', '-preset', 'fast', '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2',
+                '-movflags', '+faststart',
+                norm
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0 or not os.path.exists(norm):
+                print(f"[{job_id}] Normalize error on clip {idx}: {result.stderr[:400]}")
+                jobs[job_id] = {'status': 'error', 'error': f'Clip {idx + 1} could not be processed'}
+                return
+            normalized.append(norm)
+            os.remove(raw)
+
+        jobs[job_id]['progress'] = 85
+
+        list_path = f'{work_dir}/list.txt'
+        with open(list_path, 'w') as f:
+            for n in normalized:
+                f.write(f"file '{n}'\n")
+
+        result = subprocess.run(
+            ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path,
+             '-c', 'copy', '-movflags', '+faststart', output_path],
+            capture_output=True, text=True, timeout=600
+        )
+
+        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            # Measure the real output length — downstream overlay renders
+            # (Remotion) need it to size the composition.
+            duration = 0.0
+            probe = subprocess.run(
+                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                 '-of', 'csv=p=0', output_path],
+                capture_output=True, text=True
+            )
+            try:
+                duration = float(probe.stdout.strip())
+            except (ValueError, AttributeError):
+                pass
+            jobs[job_id] = {
+                'status': 'done',
+                'progress': 100,
+                'filepath': output_path,
+                'filename': f'concat_{job_id}.mp4',
+                'outputUrl': f'{base_url}/api/file/{job_id}',
+                'durationSeconds': duration,
+            }
+            print(f"[{job_id}] Concat complete: {len(normalized)} clips, {duration}s")
+        else:
+            print(f"[{job_id}] Concat error: {result.stderr[:400]}")
+            jobs[job_id] = {'status': 'error', 'error': 'Concat failed'}
+
+        for n in normalized:
+            if os.path.exists(n):
+                os.remove(n)
+        if os.path.exists(list_path):
+            os.remove(list_path)
+        try:
+            os.rmdir(work_dir)
+        except OSError:
+            pass
+
+    except Exception as e:
+        print(f"[{job_id}] Concat error: {str(e)}")
         jobs[job_id] = {'status': 'error', 'error': str(e)}
 
 
